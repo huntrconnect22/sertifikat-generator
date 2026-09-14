@@ -43,7 +43,7 @@ async function connectToDatabase() {
     return mongoose
   }
   if (!cachedPromise) {
-    cachedPromise = mongoose.connect(uri, { dbName: 'certificate_generator', serverSelectionTimeoutMS: 8000 })
+    cachedPromise = mongoose.connect(uri, { dbName: 'certificate_generator', serverSelectionTimeoutMS: 5000 })
       .then((m) => {
         databaseState = 'connected'
         return m
@@ -57,33 +57,31 @@ async function connectToDatabase() {
   return cachedPromise
 }
 
-// Initial connection attempt
 connectToDatabase().catch(() => {})
 
 const value = (row: Record<string, unknown>, key: string) => String(row[key] ?? '')
 const interpolate = (source: string, row: Record<string, unknown>) =>
   source.replace(/{{\s*([^}]+)\s*}}/g, (_, key: string) => value(row, key.trim()) || `{{${key.trim()}}}`)
 
-app.use(async (_req, _res, next) => {
-  try {
-    await connectToDatabase()
-  } catch {
-    // handled by route handler checking databaseState
-  }
-  next()
+app.get('/api/health', async (_req, res) => {
+  try { await connectToDatabase() } catch { /* ignore */ }
+  res.json({ database: databaseState })
 })
 
-app.get('/api/health', (_req, res) => res.json({ database: databaseState }))
 app.get('/api/templates', async (_req, res) => {
+  try { await connectToDatabase() } catch { /* ignore */ }
   if (databaseState !== 'connected') return res.status(503).json({ message: 'MongoDB belum tersambung.' })
   res.json(await CertificateTemplate.find().sort({ updatedAt: -1 }).lean())
 })
+
 app.post('/api/templates', async (req, res) => {
+  try { await connectToDatabase() } catch { /* ignore */ }
   if (databaseState !== 'connected') return res.status(503).json({ message: 'MongoDB belum tersambung.' })
   const payload = req.body as TemplatePayload
   if (!payload.name || !payload.primaryField || !payload.body) return res.status(400).json({ message: 'Nama, kolom utama, dan isi sertifikat wajib diisi.' })
   res.status(201).json(await CertificateTemplate.create(payload))
 })
+
 app.post('/api/import', upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ message: 'File Excel belum dipilih.' })
   try {
@@ -96,8 +94,8 @@ app.post('/api/import', upload.single('file'), (req, res) => {
     res.status(400).json({ message: 'File tidak dapat dibaca. Gunakan .xlsx atau .xls dengan header pada baris pertama.' })
   }
 })
+
 const getCertificateNumber = (template: TemplatePayload, recipient: Record<string, unknown>) => {
-  // If Excel has explicit 'nomor', 'no_sertifikat', 'certificate_number', etc.
   for (const key of ['nomor', 'no_sertifikat', 'nomor_sertifikat', 'certificate_number', 'no']) {
     if (recipient[key]) return String(recipient[key]).trim()
   }
@@ -249,7 +247,6 @@ function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayloa
       const sigBase64 = template.signatureImage.substring(template.signatureImage.indexOf('base64,') + 7)
       if (sigBase64) {
         const sigBuffer = Buffer.from(sigBase64, 'base64')
-        // Center the signature image in the signature block (x=525, width=220 → center=635)
         doc.image(sigBuffer, 565, 458, { fit: [140, 52], align: 'center', valign: 'center' })
       }
     } catch (err) {
@@ -275,17 +272,21 @@ function generateSinglePDFBuffer(template: TemplatePayload, recipient: Record<st
 }
 
 // Single Certificate PDF Download
-app.post('/api/certificates/pdf', (req, res) => {
+app.post('/api/certificates/pdf', async (req, res) => {
   const { template, recipient } = req.body as { template: TemplatePayload; recipient: Record<string, unknown> }
   if (!template || !recipient) return res.status(400).json({ message: 'Template dan penerima wajib ada.' })
-  const name = value(recipient, template.primaryField) || 'Penerima'
-  const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 42 })
-  const filename = `sertifikat-${name.toLowerCase().replace(/[^a-z0-9]+/gi, '-')}.pdf`
-  res.setHeader('Content-Type', 'application/pdf')
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
-  doc.pipe(res)
-  renderCertificatePage(doc, template, recipient)
-  doc.end()
+  try {
+    const name = value(recipient, template.primaryField) || 'Penerima'
+    const pdfBuffer = await generateSinglePDFBuffer(template, recipient)
+    const filename = `sertifikat-${name.toLowerCase().replace(/[^a-z0-9]+/gi, '-')}.pdf`
+    res.setHeader('Content-Type', 'application/pdf')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    res.setHeader('Content-Length', pdfBuffer.length)
+    res.end(pdfBuffer)
+  } catch (err) {
+    console.error('Error generating PDF:', err)
+    if (!res.headersSent) res.status(500).json({ message: 'Gagal membuat file PDF' })
+  }
 })
 
 // Batch PDF Download: All certificates combined into one multi-page PDF
@@ -294,17 +295,22 @@ app.post('/api/certificates/batch-pdf', (req, res) => {
   if (!template || !recipients || !recipients.length) {
     return res.status(400).json({ message: 'Template dan daftar penerima wajib ada.' })
   }
-  const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 42, autoFirstPage: false })
-  const filename = `semua-sertifikat-${(template.name || 'sertifikat').toLowerCase().replace(/[^a-z0-9]+/gi, '-')}.pdf`
-  res.setHeader('Content-Type', 'application/pdf')
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
-  doc.pipe(res)
+  try {
+    const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 42, autoFirstPage: false })
+    const filename = `semua-sertifikat-${(template.name || 'sertifikat').toLowerCase().replace(/[^a-z0-9]+/gi, '-')}.pdf`
+    res.setHeader('Content-Type', 'application/pdf')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    doc.pipe(res)
 
-  for (const recipient of recipients) {
-    doc.addPage({ size: 'A4', layout: 'landscape', margin: 42 })
-    renderCertificatePage(doc, template, recipient)
+    for (const recipient of recipients) {
+      doc.addPage({ size: 'A4', layout: 'landscape', margin: 42 })
+      renderCertificatePage(doc, template, recipient)
+    }
+    doc.end()
+  } catch (err) {
+    console.error('Error generating batch PDF:', err)
+    if (!res.headersSent) res.status(500).json({ message: 'Gagal membuat file batch PDF' })
   }
-  doc.end()
 })
 
 // Batch ZIP Download: Individual PDF for each recipient packaged in a ZIP
@@ -314,34 +320,35 @@ app.post('/api/certificates/zip', async (req, res) => {
     return res.status(400).json({ message: 'Template dan daftar penerima wajib ada.' })
   }
 
-  const archive = new ZipArchive({ zlib: { level: 6 } })
-  archive.pipe(res)
+  try {
+    const archive = new ZipArchive({ zlib: { level: 6 } })
+    archive.pipe(res)
 
-  archive.on('error', (err: Error) => {
-    console.error('Archive error:', err)
+    archive.on('error', (err: Error) => {
+      console.error('Archive error:', err)
+      if (!res.headersSent) res.status(500).json({ message: 'Gagal membuat file ZIP' })
+    })
+
+    const usedFilenames = new Map<string, number>()
+    for (let i = 0; i < recipients.length; i++) {
+      const r = recipients[i]!
+      const recipientName = value(r, template.primaryField) || `Penerima-${i + 1}`
+      const safeName = recipientName.toLowerCase().replace(/[^a-z0-9]+/gi, '-')
+      const count = (usedFilenames.get(safeName) || 0) + 1
+      usedFilenames.set(safeName, count)
+      const entryName = count > 1
+        ? `sertifikat-${safeName}-${count}.pdf`
+        : `sertifikat-${safeName}.pdf`
+
+      const pdfBuffer = await generateSinglePDFBuffer(template, r)
+      archive.append(pdfBuffer, { name: entryName })
+    }
+
+    await archive.finalize()
+  } catch (err) {
+    console.error('Error generating ZIP:', err)
     if (!res.headersSent) res.status(500).json({ message: 'Gagal membuat file ZIP' })
-  })
-
-  const usedFilenames = new Map<string, number>()
-  for (let i = 0; i < recipients.length; i++) {
-    const r = recipients[i]!
-    const recipientName = value(r, template.primaryField) || `Penerima-${i + 1}`
-    const safeName = recipientName.toLowerCase().replace(/[^a-z0-9]+/gi, '-')
-    const count = (usedFilenames.get(safeName) || 0) + 1
-    usedFilenames.set(safeName, count)
-    const entryName = count > 1
-      ? `sertifikat-${safeName}-${count}.pdf`
-      : `sertifikat-${safeName}.pdf`
-
-    const pdfBuffer = await generateSinglePDFBuffer(template, r)
-    archive.append(pdfBuffer, { name: entryName })
   }
-
-  await archive.finalize()
 })
-
-if (!process.env.VERCEL) {
-  app.listen(Number(process.env.PORT || 3001), () => console.log('Certificate API running on port 3001'))
-}
 
 export default app
