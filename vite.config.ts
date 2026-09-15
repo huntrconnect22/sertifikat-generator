@@ -1,9 +1,25 @@
 import { fileURLToPath, URL } from 'node:url'
 
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import vueJsx from '@vitejs/plugin-vue-jsx'
 import vueDevTools from 'vite-plugin-vue-devtools'
+import expressApp from './server/index'
+
+function certificateApiPlugin(): Plugin {
+  return {
+    name: 'certificate-api',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (req.url?.startsWith('/api')) {
+          expressApp(req, res, next)
+          return
+        }
+        next()
+      })
+    },
+  }
+}
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -11,13 +27,11 @@ export default defineConfig({
     vue(),
     vueJsx(),
     vueDevTools(),
+    certificateApiPlugin(),
   ],
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
-  },
-  server: {
-    proxy: { '/api': 'http://localhost:3001' },
   },
 })

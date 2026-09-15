@@ -6,7 +6,6 @@
   "scripts": {
     "dev": "vite",
     "server": "tsx watch server/local.ts",
-    "dev:full": "run-p server dev",
     "build": "run-p type-check \"build-only {@}\" --",
     "preview": "vite preview",
     "test:unit": "vitest",

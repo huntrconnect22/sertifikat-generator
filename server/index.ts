@@ -148,6 +148,85 @@ const getCertificateNumber = (template: TemplatePayload, recipient: Record<strin
   return `${prefix}/${year}/${numPart}-${hexPart}`
 }
 
+function scallopSealPath(cx: number, cy: number, baseR: number, lobes = 16, bump = 2.5): string {
+  const steps = lobes * 2
+  const parts: string[] = []
+  for (let i = 0; i <= steps; i++) {
+    const angle = (i / steps) * Math.PI * 2 - Math.PI / 2
+    const radius = i % 2 === 0 ? baseR + bump : baseR - bump * 0.35
+    const x = cx + radius * Math.cos(angle)
+    const y = cy + radius * Math.sin(angle)
+    parts.push(i === 0 ? `M ${x.toFixed(2)} ${y.toFixed(2)}` : `L ${x.toFixed(2)} ${y.toFixed(2)}`)
+  }
+  return `${parts.join(' ')} Z`
+}
+
+function drawSealArcText(
+  doc: PDFKit.PDFDocument,
+  cx: number,
+  cy: number,
+  radius: number,
+  text: string,
+  color: string,
+  position: 'top' | 'bottom'
+) {
+  const chars = text.split('')
+  const arcSpan = Math.PI * 0.78
+  const startAngle = position === 'top' ? -Math.PI / 2 - arcSpan / 2 : Math.PI / 2 - arcSpan / 2
+  const step = chars.length > 1 ? arcSpan / (chars.length - 1) : 0
+
+  doc.font('Helvetica-Bold').fontSize(5).fillColor(color)
+
+  chars.forEach((char, index) => {
+    const angle = startAngle + step * index
+    const x = cx + radius * Math.cos(angle)
+    const y = cy + radius * Math.sin(angle)
+    const rotation = (angle * 180) / Math.PI + (position === 'top' ? 90 : -90)
+
+    doc.save()
+    doc.translate(x, y)
+    doc.rotate(rotation)
+    doc.text(char, -1.5, -2, { lineBreak: false, width: 4 })
+    doc.restore()
+  })
+}
+
+function drawOfficialSeal(doc: PDFKit.PDFDocument, cx: number, cy: number, accentColor: string, size: 'md' | 'lg' = 'md') {
+  const outerR = size === 'lg' ? 30 : 27
+  const bump = size === 'lg' ? 2.8 : 2.5
+  const scallop = scallopSealPath(cx, cy, outerR, 16, bump)
+
+  doc.save()
+
+  doc.path(scallop).fillOpacity(0.14).fillColor('#d7c28a').fill()
+  doc.path(scallop).fillOpacity(1).lineWidth(1.1).strokeColor('#d7c28a').stroke()
+
+  doc.circle(cx, cy, outerR - 5).fillOpacity(0.95).fillColor('#ffffff').fill()
+  doc.circle(cx, cy, outerR - 7).lineWidth(0.8).strokeColor('#d7c28a').stroke()
+  doc.circle(cx, cy, outerR - 10).lineWidth(0.7).strokeColor(accentColor).stroke()
+
+  const dotR = outerR - 2.5
+  for (const [dx, dy] of [[0, -1], [1, 0], [0, 1], [-1, 0]] as const) {
+    doc.circle(cx + dx * dotR * 0.82, cy + dy * dotR * 0.82, 1.1).fillColor('#d7c28a').fill()
+  }
+
+  const starOuter = outerR - 14
+  const starInner = outerR - 19
+  const starPoints: [number, number][] = []
+  for (let i = 0; i < 8; i++) {
+    const outerAngle = (i / 8) * Math.PI * 2 - Math.PI / 2
+    const innerAngle = outerAngle + Math.PI / 8
+    starPoints.push([cx + starOuter * Math.cos(outerAngle), cy + starOuter * Math.sin(outerAngle)])
+    starPoints.push([cx + starInner * Math.cos(innerAngle), cy + starInner * Math.sin(innerAngle)])
+  }
+  doc.polygon(...starPoints).fillColor(accentColor).fillOpacity(0.85).fill()
+
+  drawSealArcText(doc, cx, cy, outerR - 11.5, 'AUTHENTIC', accentColor, 'top')
+  drawSealArcText(doc, cx, cy, outerR - 11.5, 'VERIFIED', accentColor, 'bottom')
+
+  doc.restore()
+}
+
 function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayload, recipient: Record<string, unknown>) {
   const name = value(recipient, template.primaryField) || 'Penerima'
   const accentColor = template.accent || '#0f766e'
@@ -291,15 +370,7 @@ function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayloa
   // Footer: Dual signature vs Single signature
   if (isSig2Active) {
     // Center: Official Seal and Unique Certificate Number
-    doc.save()
-    const sealX = 421
-    const sealY = 478
-    doc.circle(sealX, sealY, 25).lineWidth(1.5).strokeColor('#d7c28a').stroke()
-    doc.circle(sealX, sealY, 21).lineWidth(1).strokeColor(accentColor).stroke()
-    doc.fillColor(accentColor).fontSize(6.5).font('Helvetica-Bold').text('AUTHENTIC', sealX - 22, sealY - 9, { width: 44, align: 'center', characterSpacing: 1 })
-    doc.fillColor('#d7c28a').fontSize(9.5).text('★', sealX - 4, sealY - 2)
-    doc.fillColor(accentColor).fontSize(6.5).text('VERIFIED', sealX - 22, sealY + 6, { width: 44, align: 'center', characterSpacing: 1 })
-    doc.restore()
+    drawOfficialSeal(doc, 421, 478, accentColor, 'md')
 
     doc.save()
     doc.fillColor('#64748b')
@@ -331,18 +402,9 @@ function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayloa
     doc.fillColor('#172327').font('Times-Bold').fontSize(16).text(sig2Name, 55, sigBoxY + 56, { width: 210, align: 'center' })
     doc.moveTo(75, sigBoxY + 77).lineTo(245, sigBoxY + 77).lineWidth(1).strokeColor('#cbd5e1').stroke()
     doc.fillColor('#64748b').font('Helvetica-Bold').fontSize(9.5).text(sig2Label, 55, sigBoxY + 82, { width: 210, align: 'center' })
-    doc.fillColor('#64748b').font('Helvetica').fontSize(8.5).text(template.organization, 55, sigBoxY + 96, { width: 210, align: 'center' })
   } else {
     // Single signature mode: Seal & cert ID on the left side
-    doc.save()
-    const sealX = 145
-    const sealY = 482
-    doc.circle(sealX, sealY, 28).lineWidth(1.5).strokeColor('#d7c28a').stroke()
-    doc.circle(sealX, sealY, 24).lineWidth(1).strokeColor(accentColor).stroke()
-    doc.fillColor(accentColor).fontSize(7).font('Helvetica-Bold').text('AUTHENTIC', sealX - 22, sealY - 10, { width: 44, align: 'center', characterSpacing: 1 })
-    doc.fillColor('#d7c28a').fontSize(11).text('★', sealX - 4, sealY - 2)
-    doc.fillColor(accentColor).fontSize(7).text('VERIFIED', sealX - 22, sealY + 8, { width: 44, align: 'center', characterSpacing: 1 })
-    doc.restore()
+    drawOfficialSeal(doc, 145, 482, accentColor, 'lg')
 
     doc.save()
     doc.fillColor('#64748b')
@@ -375,7 +437,6 @@ function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayloa
   doc.fillColor('#172327').font('Times-Bold').fontSize(16).text(sig1Name, 577, sigBoxY + 56, { width: 210, align: 'center' })
   doc.moveTo(597, sigBoxY + 77).lineTo(767, sigBoxY + 77).lineWidth(1).strokeColor('#cbd5e1').stroke()
   doc.fillColor('#64748b').font('Helvetica-Bold').fontSize(9.5).text(sig1Label, 577, sigBoxY + 82, { width: 210, align: 'center' })
-  doc.fillColor('#64748b').font('Helvetica').fontSize(8.5).text(template.organization, 577, sigBoxY + 96, { width: 210, align: 'center' })
 }
 
 function generateSinglePDFBuffer(template: TemplatePayload, recipient: Record<string, unknown>): Promise<Buffer> {
