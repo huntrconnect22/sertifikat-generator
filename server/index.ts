@@ -13,18 +13,27 @@ app.use(cors())
 app.use(express.json({ limit: '20mb' }))
 
 type TemplatePayload = {
-  name: string; title: string; type: string; primaryField: string; body: string
+  name: string; title: string; subtitle?: string; type: string; primaryField: string; body: string
   signatory: string; organization: string; accent: string; logo?: string
-  signatureImage?: string; certNumberPrefix?: string
+  logo2?: string
+  signatureImage?: string; signatureImage2?: string
+  signatory2?: string; signatoryTitle1?: string; signatoryTitle2?: string
+  certNumberPrefix?: string
 }
 
 const templateSchema = new Schema<TemplatePayload>({
   name: { type: String, required: true }, title: { type: String, required: true },
+  subtitle: { type: String, default: '' },
   type: { type: String, required: true }, primaryField: { type: String, required: true },
   body: { type: String, required: true }, signatory: { type: String, required: true },
+  signatory2: { type: String, default: '' },
+  signatoryTitle1: { type: String, default: '' },
+  signatoryTitle2: { type: String, default: '' },
   organization: { type: String, required: true }, accent: { type: String, required: true },
   logo: { type: String, default: '' },
+  logo2: { type: String, default: '' },
   signatureImage: { type: String, default: '' },
+  signatureImage2: { type: String, default: '' },
   certNumberPrefix: { type: String, default: 'CERT' },
 }, { timestamps: true })
 const CertificateTemplate = mongoose.model<TemplatePayload>('CertificateTemplate', templateSchema)
@@ -139,124 +148,169 @@ function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayloa
   drawCorner(34, 561, 1, -1)
   drawCorner(808, 561, -1, -1)
 
-  // Header Layout: Centered prominent logo or emblem badge
-  let contentStartY = 156
-  let logoRendered = false
+  // Header Layout: Top Left Logo 2 and Top Right Logo 1
+  const logoMaxW = 100
+  const logoMaxH = 65
+  const logoY = 40
+
+  // Logo 2 (Kiri Atas)
+  if (template.logo2 && template.logo2.includes('base64,')) {
+    try {
+      const base64 = template.logo2.substring(template.logo2.indexOf('base64,') + 7)
+      if (base64) {
+        const logo2Buffer = Buffer.from(base64, 'base64')
+        doc.image(logo2Buffer, 50, logoY, { fit: [logoMaxW, logoMaxH], valign: 'center' })
+      }
+    } catch (err) {
+      console.error('Failed to render logo2 in PDF:', err)
+    }
+  }
+
+  // Logo 1 (Kanan Atas)
   if (template.logo && template.logo.includes('base64,')) {
     try {
       const base64 = template.logo.substring(template.logo.indexOf('base64,') + 7)
       if (base64) {
-        const logoBuffer = Buffer.from(base64, 'base64')
-        const logoMaxW = 120
-        const logoMaxH = 80
-        const logoX = (842 - logoMaxW) / 2
-        doc.image(logoBuffer, logoX, 36, { fit: [logoMaxW, logoMaxH], align: 'center', valign: 'center' })
-        contentStartY = 126
-        logoRendered = true
+        const logo1Buffer = Buffer.from(base64, 'base64')
+        doc.image(logo1Buffer, 842 - 50 - logoMaxW, logoY, { fit: [logoMaxW, logoMaxH], align: 'right', valign: 'center' })
       }
     } catch (err) {
-      console.error('Failed to render logo in PDF:', err)
+      console.error('Failed to render logo1 in PDF:', err)
     }
   }
 
-  if (!logoRendered) {
+  // If neither logo is provided, show elegant center emblem
+  if (!template.logo && !template.logo2) {
     doc.save()
-    doc.circle(421, 80, 22).lineWidth(1.5).strokeColor('#d7c28a').stroke()
-    doc.circle(421, 80, 18).lineWidth(1).strokeColor(accentColor).stroke()
-    doc.fillColor(accentColor).fontSize(16).font('Helvetica-Bold').text('certify', 400, 73)
+    doc.circle(421, 62, 18).lineWidth(1.5).strokeColor('#d7c28a').stroke()
+    doc.circle(421, 62, 14).lineWidth(1).strokeColor(accentColor).stroke()
+    doc.fillColor(accentColor).fontSize(14).font('Helvetica-Bold').text('✦', 415, 55)
     doc.restore()
-    contentStartY = 118
   }
+
+  const contentStartY = 64
 
   // Organization Header
   doc.fillColor(accentColor)
     .fontSize(12)
     .font('Helvetica-Bold')
-    .text(template.organization.toUpperCase(), 60, contentStartY, { align: 'center', characterSpacing: 2 })
+    .text(template.organization.toUpperCase(), 160, contentStartY, { align: 'center', width: 522, characterSpacing: 2 })
 
   // Certificate Main Title
   doc.fillColor('#172327')
-    .fontSize(35)
+    .fontSize(32)
     .font('Times-Bold')
-    .text(template.title, 60, contentStartY + 23, { align: 'center' })
+    .text(template.title, 60, contentStartY + 18, { align: 'center' })
+
+  let currentY = contentStartY + 54
+
+  // Certificate Subtitle (jika ada)
+  if (template.subtitle && template.subtitle.trim()) {
+    doc.fillColor('#4b5563')
+      .fontSize(12)
+      .font('Helvetica-Oblique')
+      .text(template.subtitle.trim(), 60, currentY, { align: 'center' })
+    currentY += 20
+  }
 
   // Badge pill type
   const typeText = `SERTIFIKAT ${template.type.toUpperCase()}`
   doc.fillColor('#606f7b')
     .fontSize(10)
     .font('Helvetica-Bold')
-    .text(typeText, 60, contentStartY + 72, { align: 'center', characterSpacing: 2.5 })
+    .text(typeText, 60, currentY, { align: 'center', characterSpacing: 2.5 })
 
   // Awarded text
   doc.fillColor('#4b5563')
-    .fontSize(12)
+    .fontSize(11.5)
     .font('Helvetica')
-    .text('Diberikan dengan penuh kehormatan kepada', 60, contentStartY + 104, { align: 'center' })
+    .text('Diberikan dengan penuh kehormatan kepada', 60, currentY + 24, { align: 'center' })
 
   // Recipient Name
   doc.fillColor(accentColor)
-    .fontSize(34)
+    .fontSize(33)
     .font('Times-BoldItalic')
-    .text(name, 50, contentStartY + 128, { align: 'center' })
+    .text(name, 50, currentY + 44, { align: 'center' })
 
   // Elegant divider under name with center jewel
-  const dividerY = contentStartY + 172
+  const dividerY = currentY + 86
   doc.moveTo(220, dividerY).lineTo(390, dividerY).lineWidth(1).strokeColor('#d7c28a').stroke()
   doc.polygon([421, dividerY - 4], [426, dividerY], [421, dividerY + 4], [416, dividerY]).fillColor(accentColor).fill()
   doc.moveTo(452, dividerY).lineTo(622, dividerY).lineWidth(1).strokeColor('#d7c28a').stroke()
 
   // Body Description
   doc.fillColor('#334155')
-    .fontSize(12.5)
+    .fontSize(12)
     .font('Helvetica')
-    .text(interpolate(template.body, recipient), 95, contentStartY + 188, {
+    .text(interpolate(template.body, recipient), 95, currentY + 98, {
       align: 'center',
       width: 652,
-      lineGap: 5
+      lineGap: 4
     })
 
-  // Bottom Footer: Official Seal (left), Unique Cert Number (center bottom), and Signatory (right)
+  // Center bottom: Official Seal and Unique Certificate Number badge
   doc.save()
-  const sealX = 145
-  const sealY = 502
-  doc.circle(sealX, sealY, 28).lineWidth(1.5).strokeColor('#d7c28a').stroke()
-  doc.circle(sealX, sealY, 24).lineWidth(1).strokeColor(accentColor).stroke()
-  doc.fillColor(accentColor).fontSize(7).font('Helvetica-Bold').text('AUTHENTIC', sealX - 22, sealY - 10, { width: 44, align: 'center', characterSpacing: 1 })
-  doc.fillColor('#d7c28a').fontSize(11).text('★', sealX - 4, sealY - 2)
-  doc.fillColor(accentColor).fontSize(7).text('VERIFIED', sealX - 22, sealY + 8, { width: 44, align: 'center', characterSpacing: 1 })
+  const sealX = 421
+  const sealY = 468
+  doc.circle(sealX, sealY, 24).lineWidth(1.5).strokeColor('#d7c28a').stroke()
+  doc.circle(sealX, sealY, 20).lineWidth(1).strokeColor(accentColor).stroke()
+  doc.fillColor(accentColor).fontSize(6.5).font('Helvetica-Bold').text('AUTHENTIC', sealX - 22, sealY - 9, { width: 44, align: 'center', characterSpacing: 1 })
+  doc.fillColor('#d7c28a').fontSize(9).text('★', sealX - 4, sealY - 2)
+  doc.fillColor(accentColor).fontSize(6.5).text('VERIFIED', sealX - 22, sealY + 6, { width: 44, align: 'center', characterSpacing: 1 })
   doc.restore()
 
-  // Center bottom: Unique Certificate Number badge
   doc.save()
   doc.fillColor('#64748b')
-    .fontSize(8.5)
+    .fontSize(8)
     .font('Helvetica-Bold')
-    .text('NO. SERTIFIKAT', 280, 498, { width: 282, align: 'center', characterSpacing: 1.5 })
+    .text('NO. SERTIFIKAT', 280, 506, { width: 282, align: 'center', characterSpacing: 1.5 })
   doc.fillColor('#1e293b')
-    .fontSize(10)
+    .fontSize(9.5)
     .font('Helvetica')
-    .text(certNumber, 280, 514, { width: 282, align: 'center', characterSpacing: 1.2 })
+    .text(certNumber, 280, 519, { width: 282, align: 'center', characterSpacing: 1.2 })
   doc.restore()
 
-  // Right: Signature block
-  doc.fillColor('#64748b').fontSize(9.5).font('Helvetica').text('Ditetapkan secara resmi oleh', 525, 452, { width: 220, align: 'center' })
+  // Left: Tanda Tangan 2 (TTD 2 kiri bawah)
+  const sig2Label = template.signatoryTitle2 || 'Mengetahui'
+  const sig2Name = template.signatory2 || template.organization
+  doc.fillColor('#64748b').fontSize(9).font('Helvetica').text(sig2Label, 55, 436, { width: 210, align: 'center' })
 
-  // Render PNG Signature if uploaded
+  if (template.signatureImage2 && template.signatureImage2.includes('base64,')) {
+    try {
+      const sig2Base64 = template.signatureImage2.substring(template.signatureImage2.indexOf('base64,') + 7)
+      if (sig2Base64) {
+        const sig2Buffer = Buffer.from(sig2Base64, 'base64')
+        doc.image(sig2Buffer, 90, 448, { fit: [140, 50], align: 'center', valign: 'center' })
+      }
+    } catch (err) {
+      console.error('Failed to render signature 2 in PDF:', err)
+    }
+  }
+
+  doc.fillColor('#172327').font('Times-Bold').fontSize(16).text(sig2Name, 55, 502, { width: 210, align: 'center' })
+  doc.moveTo(75, 523).lineTo(245, 523).lineWidth(1).strokeColor('#cbd5e1').stroke()
+  doc.fillColor('#64748b').font('Helvetica-Bold').fontSize(9).text(template.organization, 55, 528, { width: 210, align: 'center' })
+
+  // Right: Tanda Tangan 1 (TTD 1 kanan bawah)
+  const sig1Label = template.signatoryTitle1 || 'Ditetapkan secara resmi oleh'
+  const sig1Name = template.signatory || 'Penandatangan'
+  doc.fillColor('#64748b').fontSize(9).font('Helvetica').text(sig1Label, 577, 436, { width: 210, align: 'center' })
+
   if (template.signatureImage && template.signatureImage.includes('base64,')) {
     try {
       const sigBase64 = template.signatureImage.substring(template.signatureImage.indexOf('base64,') + 7)
       if (sigBase64) {
         const sigBuffer = Buffer.from(sigBase64, 'base64')
-        doc.image(sigBuffer, 565, 458, { fit: [140, 52], align: 'center', valign: 'center' })
+        doc.image(sigBuffer, 612, 448, { fit: [140, 50], align: 'center', valign: 'center' })
       }
     } catch (err) {
-      console.error('Failed to render signature in PDF:', err)
+      console.error('Failed to render signature 1 in PDF:', err)
     }
   }
 
-  doc.fillColor('#172327').font('Times-Bold').fontSize(18).text(template.signatory, 525, 504, { width: 220, align: 'center' })
-  doc.moveTo(555, 526).lineTo(715, 526).lineWidth(1).strokeColor('#cbd5e1').stroke()
-  doc.fillColor('#64748b').font('Helvetica-Bold').fontSize(9.5).text(template.organization, 525, 532, { width: 220, align: 'center' })
+  doc.fillColor('#172327').font('Times-Bold').fontSize(16).text(sig1Name, 577, 502, { width: 210, align: 'center' })
+  doc.moveTo(597, 523).lineTo(767, 523).lineWidth(1).strokeColor('#cbd5e1').stroke()
+  doc.fillColor('#64748b').font('Helvetica-Bold').fontSize(9).text(template.organization, 577, 528, { width: 210, align: 'center' })
 }
 
 function generateSinglePDFBuffer(template: TemplatePayload, recipient: Record<string, unknown>): Promise<Buffer> {

@@ -7,7 +7,8 @@ describe('App', () => {
   it('mounts renders properly', () => {
     const wrapper = mount(App)
     expect(wrapper.text()).toContain('SERTIFIKAT GENERATOR')
-    expect(wrapper.text()).toContain('Logo organisasi')
+    expect(wrapper.text()).toContain('Logo 1 (Kanan Atas)')
+    expect(wrapper.text()).toContain('Logo 2 (Kiri Atas)')
     expect(wrapper.text()).toContain('Pilihan warna tema sertifikat')
   })
 
@@ -31,7 +32,8 @@ describe('App', () => {
 
   it('renders unique certificate registration number and signature upload input', () => {
     const wrapper = mount(App)
-    expect(wrapper.text()).toContain('Tanda tangan (PNG)')
+    expect(wrapper.text()).toContain('Tanda Tangan 1 (Kanan Bawah)')
+    expect(wrapper.text()).toContain('Tanda Tangan 2 (Kiri Bawah)')
     expect(wrapper.text()).toContain('NO. SERTIFIKAT')
   })
 })
