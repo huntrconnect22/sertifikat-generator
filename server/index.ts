@@ -95,6 +95,18 @@ app.post('/api/templates', async (req, res) => {
   res.status(201).json(await CertificateTemplate.create(payload))
 })
 
+app.delete('/api/templates/:id', async (req, res) => {
+  try { await connectToDatabase() } catch { /* ignore */ }
+  if (databaseState !== 'connected') return res.status(503).json({ message: 'MongoDB belum tersambung.' })
+  try {
+    const deleted = await CertificateTemplate.findByIdAndDelete(req.params.id)
+    if (!deleted) return res.status(404).json({ message: 'Template tidak ditemukan.' })
+    res.json({ message: 'Template berhasil dihapus.' })
+  } catch {
+    res.status(400).json({ message: 'ID template tidak valid.' })
+  }
+})
+
 app.post('/api/import', upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ message: 'File Excel belum dipilih.' })
   try {
