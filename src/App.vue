@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import * as XLSX from 'xlsx'
 type Recipient = Record<string, string | number>
 type Template = {
   _id?: string
@@ -22,6 +23,7 @@ type Template = {
   signatureImage?: string
   signatureImage2?: string
   certNumberPrefix?: string
+  certificateDate?: string
 }
 const colorPresets = [
   { name: 'Emerald Teal', value: '#0f766e' },
@@ -54,7 +56,8 @@ const template = ref<Template>({
   enableSig2: false,
   signatureImage: '',
   signatureImage2: '',
-  certNumberPrefix: 'CERT'
+  certNumberPrefix: 'CERT',
+  certificateDate: '14 September 2026'
 })
 const recipients = ref<Recipient[]>([{ nama: 'Nadia Pratama', kelas: 'Kelas Desain Produk', tanggal: '14 September 2026' }, { nama: 'Raka Wijaya', kelas: 'Kelas Desain Produk', tanggal: '14 September 2026' }])
 const headers = ref(['nama', 'kelas', 'tanggal']), selectedIndex = ref(0), status = ref('Siap memproses data'), connection = ref<'connecting' | 'connected' | 'offline'>('connecting'), savedTemplates = ref<Template[]>([]), fileInput = ref<HTMLInputElement>(), logoInput = ref<HTMLInputElement>(), logo2Input = ref<HTMLInputElement>(), sigInput = ref<HTMLInputElement>(), sig2Input = ref<HTMLInputElement>()
@@ -107,9 +110,87 @@ const certNumber = computed(() => {
   const year = new Date().getFullYear()
   return `${prefix}/${year}/${numPart}-${hexPart}`
 })
-const previewBody = computed(() => template.value.body.replace(/{{\s*([^}]+)\s*}}/g, (_, key) => String(selected.value[key.trim()] ?? `{{${key.trim()}}}`)))
-const placeholders = computed(() => headers.value.map((name) => `{{${name}}}`))
-async function importExcel(event: Event) { const file = (event.target as HTMLInputElement).files?.[0]; if (!file) return; status.value = 'Membaca file Excel…'; const form = new FormData(); form.append('file', file); const response = await fetch('/api/import', { method: 'POST', body: form }); const data = await response.json(); if (!response.ok) { status.value = data.message; return }; headers.value = data.headers; recipients.value = data.rows; selectedIndex.value = 0; if (!headers.value.includes(template.value.primaryField)) template.value.primaryField = headers.value[0] || ''; status.value = `${data.rows.length} penerima berhasil diimpor` }
+const previewBody = computed(() =>
+  template.value.body.replace(/{{\s*([^}]+)\s*}}/g, (_, key) => {
+    const trimmed = key.trim()
+    if (selected.value[trimmed] !== undefined && selected.value[trimmed] !== '') {
+      return String(selected.value[trimmed])
+    }
+    if ((trimmed.toLowerCase() === 'tanggal' || trimmed.toLowerCase() === 'date') && template.value.certificateDate) {
+      return template.value.certificateDate
+    }
+    return `{{${trimmed}}}`
+  })
+)
+const placeholders = computed(() => {
+  const list = [...headers.value.map((name) => `{{${name}}}`)]
+  if (!headers.value.some((h) => h.toLowerCase() === 'tanggal')) {
+    list.push('{{tanggal}}')
+  }
+  return list
+})
+
+async function importExcel(event: Event) {
+  const file = (event.target as HTMLInputElement).files?.[0]
+  if (!file) return
+  status.value = 'Membaca file Excel…'
+
+  try {
+    // 1. Parsing langsung di browser (cepat & tidak bergantung koneksi server)
+    const arrayBuffer = await file.arrayBuffer()
+    const workbook = XLSX.read(arrayBuffer, { type: 'array' })
+    const firstSheetName = workbook.SheetNames[0]
+    if (!firstSheetName) throw new Error('Sheet Excel kosong')
+    const sheet = workbook.Sheets[firstSheetName]
+    if (!sheet) throw new Error('Sheet Excel tidak valid')
+
+    const rawRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
+    if (!rawRows.length) {
+      status.value = 'File Excel tidak memiliki baris data.'
+      return
+    }
+
+    const importedHeaders = Object.keys(rawRows[0] || {})
+    headers.value = importedHeaders
+    recipients.value = rawRows as Recipient[]
+    selectedIndex.value = 0
+
+    // 2. Deteksi otomatis kolom Nama (misal: '1. Nama Lengkap', 'Nama', 'Full Name', dll.)
+    const nameCandidate = importedHeaders.find((h) =>
+      /^(1\.\s*)?nama(\s*lengkap)?$/i.test(h.trim()) ||
+      /nama/i.test(h) ||
+      /name/i.test(h)
+    )
+
+    if (nameCandidate) {
+      template.value.primaryField = nameCandidate
+      status.value = `Berhasil mengimpor ${rawRows.length} peserta. Kolom nama terdeteksi otomatis: "${nameCandidate}".`
+    } else {
+      if (!importedHeaders.includes(template.value.primaryField)) {
+        template.value.primaryField = importedHeaders[0] || ''
+      }
+      status.value = `${rawRows.length} penerima berhasil diimpor`
+    }
+  } catch (err: any) {
+    console.warn('Gagal membaca excel di client, mencoba via server API:', err)
+    // Fallback: via server API jika client gagal
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      const response = await fetch('/api/import', { method: 'POST', body: form })
+      const data = await response.json()
+      if (!response.ok) { status.value = data.message; return }
+      headers.value = data.headers
+      recipients.value = data.rows
+      selectedIndex.value = 0
+      const nameCandidate = data.headers.find((h: string) => /nama/i.test(h) || /name/i.test(h))
+      if (nameCandidate) template.value.primaryField = nameCandidate
+      status.value = `${data.rows.length} penerima berhasil diimpor`
+    } catch {
+      status.value = 'Gagal membaca file Excel. Pastikan format file .xlsx atau .xls valid.'
+    }
+  }
+}
 const DRAFT_KEY = 'certify_draft_v1'
 function saveDraft() {
   try {
@@ -142,6 +223,7 @@ function restoreDraft() {
     if (draft.type) template.value.type = draft.type
     if (draft.certNumberPrefix) template.value.certNumberPrefix = draft.certNumberPrefix
     if (draft.primaryField) template.value.primaryField = draft.primaryField
+    if (draft.certificateDate !== undefined) template.value.certificateDate = draft.certificateDate
   } catch { /* ignore */ }
 }
 watch(template, saveDraft, { deep: true })
@@ -428,9 +510,14 @@ onMounted(() => { restoreDraft(); checkConnection() })
   <button v-if="template.signatureImage" class="remove-logo" @click="removeSignature">Hapus</button>
 </div>
 
-<label>Prefix / Format No. Sertifikat
-  <input v-model="template.certNumberPrefix" placeholder="Contoh: CERT, SK, BATCH1" />
-</label>
+<div class="two-cols">
+  <label>Prefix / Format No. Sertifikat
+    <input v-model="template.certNumberPrefix" placeholder="Contoh: CERT, SK, BATCH1" />
+  </label>
+  <label>Tanggal Sertifikat (Konfigurasi)
+    <input v-model="template.certificateDate" placeholder="Contoh: 14 September 2026" />
+  </label>
+</div>
 <div class="color-palette-section"><label>Pilihan warna tema sertifikat</label><div class="swatches"><button v-for="c in colorPresets" :key="c.value" type="button" class="swatch-btn" :class="{ active: template.accent.toLowerCase() === c.value.toLowerCase() }" :style="{ backgroundColor: c.value }" :title="c.name" @click="template.accent = c.value"><span v-if="template.accent.toLowerCase() === c.value.toLowerCase()" class="check-icon">✓</span></button></div><label class="color-field"><span>Warna kustom:</span><input v-model="template.accent" type="color" /><code>{{ template.accent }}</code></label></div></section>
         <section class="preview-area"><div class="section-title"><span class="step">PREVIEW</span><div><h2>Hasil sertifikat</h2><p>Pratinjau dari data penerima aktif.</p></div></div><article class="certificate" :style="{ '--accent': template.accent }"><div class="corner c-tl"></div><div class="corner c-tr"></div><div class="corner c-bl"></div><div class="corner c-br"></div><div class="inner"><div class="cert-header">
           <div class="header-logos-row" :class="{ 'single-logo-mode': !template.enableLogo2 }">

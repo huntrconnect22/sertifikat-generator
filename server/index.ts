@@ -21,6 +21,7 @@ type TemplatePayload = {
   signatureImage?: string; signatureImage2?: string
   signatory2?: string; signatoryTitle1?: string; signatoryTitle2?: string
   certNumberPrefix?: string
+  certificateDate?: string
 }
 
 const templateSchema = new Schema<TemplatePayload>({
@@ -39,6 +40,7 @@ const templateSchema = new Schema<TemplatePayload>({
   signatureImage: { type: String, default: '' },
   signatureImage2: { type: String, default: '' },
   certNumberPrefix: { type: String, default: 'CERT' },
+  certificateDate: { type: String, default: '' },
 }, { timestamps: true })
 const CertificateTemplate = mongoose.model<TemplatePayload>('CertificateTemplate', templateSchema)
 
@@ -73,8 +75,16 @@ async function connectToDatabase() {
 connectToDatabase().catch(() => {})
 
 const value = (row: Record<string, unknown>, key: string) => String(row[key] ?? '')
-const interpolate = (source: string, row: Record<string, unknown>) =>
-  source.replace(/{{\s*([^}]+)\s*}}/g, (_, key: string) => value(row, key.trim()) || `{{${key.trim()}}}`)
+const interpolate = (source: string, row: Record<string, unknown>, template?: TemplatePayload) =>
+  source.replace(/{{\s*([^}]+)\s*}}/g, (_, key: string) => {
+    const trimmed = key.trim()
+    const val = value(row, trimmed)
+    if (val) return val
+    if ((trimmed.toLowerCase() === 'tanggal' || trimmed.toLowerCase() === 'date') && template?.certificateDate) {
+      return template.certificateDate
+    }
+    return `{{${trimmed}}}`
+  })
 
 app.get('/api/health', async (_req, res) => {
   try { await connectToDatabase() } catch { /* ignore */ }
@@ -269,7 +279,7 @@ function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayloa
   doc.fillColor('#334155')
     .fontSize(13)
     .font('Helvetica')
-    .text(interpolate(template.body, recipient), 90, currentY, {
+    .text(interpolate(template.body, recipient, template), 90, currentY, {
       align: 'center',
       width: 662,
       lineGap: 6
