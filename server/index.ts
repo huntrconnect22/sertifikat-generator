@@ -315,23 +315,23 @@ function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayloa
     // Left: Tanda Tangan 2 (TTD 2 kiri bawah)
     const sig2Label = template.signatoryTitle2 || 'Mengetahui'
     const sig2Name = template.signatory2 || template.organization
-    doc.fillColor('#64748b').fontSize(9.5).font('Helvetica').text(sig2Label, 55, sigBoxY, { width: 210, align: 'center' })
 
     if (template.signatureImage2 && template.signatureImage2.includes('base64,')) {
       try {
         const sig2Base64 = template.signatureImage2.substring(template.signatureImage2.indexOf('base64,') + 7)
         if (sig2Base64) {
           const sig2Buffer = Buffer.from(sig2Base64, 'base64')
-          doc.image(sig2Buffer, 90, sigBoxY + 12, { fit: [140, 52], align: 'center', valign: 'center' })
+          doc.image(sig2Buffer, 90, sigBoxY, { fit: [140, 52], align: 'center', valign: 'center' })
         }
       } catch (err) {
         console.error('Failed to render signature 2 in PDF:', err)
       }
     }
 
-    doc.fillColor('#172327').font('Times-Bold').fontSize(16).text(sig2Name, 55, sigBoxY + 68, { width: 210, align: 'center' })
-    doc.moveTo(75, sigBoxY + 89).lineTo(245, sigBoxY + 89).lineWidth(1).strokeColor('#cbd5e1').stroke()
-    doc.fillColor('#64748b').font('Helvetica-Bold').fontSize(9.5).text(template.organization, 55, sigBoxY + 94, { width: 210, align: 'center' })
+    doc.fillColor('#172327').font('Times-Bold').fontSize(16).text(sig2Name, 55, sigBoxY + 56, { width: 210, align: 'center' })
+    doc.moveTo(75, sigBoxY + 77).lineTo(245, sigBoxY + 77).lineWidth(1).strokeColor('#cbd5e1').stroke()
+    doc.fillColor('#64748b').font('Helvetica-Bold').fontSize(9.5).text(sig2Label, 55, sigBoxY + 82, { width: 210, align: 'center' })
+    doc.fillColor('#64748b').font('Helvetica').fontSize(8.5).text(template.organization, 55, sigBoxY + 96, { width: 210, align: 'center' })
   } else {
     // Single signature mode: Seal & cert ID on the left side
     doc.save()
@@ -359,23 +359,23 @@ function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayloa
   // Right: Tanda Tangan 1 (TTD 1 kanan bawah)
   const sig1Label = template.signatoryTitle1 || 'Ditetapkan secara resmi oleh'
   const sig1Name = template.signatory || 'Penandatangan'
-  doc.fillColor('#64748b').fontSize(9.5).font('Helvetica').text(sig1Label, 577, sigBoxY, { width: 210, align: 'center' })
 
   if (template.signatureImage && template.signatureImage.includes('base64,')) {
     try {
       const sigBase64 = template.signatureImage.substring(template.signatureImage.indexOf('base64,') + 7)
       if (sigBase64) {
         const sigBuffer = Buffer.from(sigBase64, 'base64')
-        doc.image(sigBuffer, 612, sigBoxY + 12, { fit: [140, 52], align: 'center', valign: 'center' })
+        doc.image(sigBuffer, 612, sigBoxY, { fit: [140, 52], align: 'center', valign: 'center' })
       }
     } catch (err) {
       console.error('Failed to render signature 1 in PDF:', err)
     }
   }
 
-  doc.fillColor('#172327').font('Times-Bold').fontSize(16).text(sig1Name, 577, sigBoxY + 68, { width: 210, align: 'center' })
-  doc.moveTo(597, sigBoxY + 89).lineTo(767, sigBoxY + 89).lineWidth(1).strokeColor('#cbd5e1').stroke()
-  doc.fillColor('#64748b').font('Helvetica-Bold').fontSize(9.5).text(template.organization, 577, sigBoxY + 94, { width: 210, align: 'center' })
+  doc.fillColor('#172327').font('Times-Bold').fontSize(16).text(sig1Name, 577, sigBoxY + 56, { width: 210, align: 'center' })
+  doc.moveTo(597, sigBoxY + 77).lineTo(767, sigBoxY + 77).lineWidth(1).strokeColor('#cbd5e1').stroke()
+  doc.fillColor('#64748b').font('Helvetica-Bold').fontSize(9.5).text(sig1Label, 577, sigBoxY + 82, { width: 210, align: 'center' })
+  doc.fillColor('#64748b').font('Helvetica').fontSize(8.5).text(template.organization, 577, sigBoxY + 96, { width: 210, align: 'center' })
 }
 
 function generateSinglePDFBuffer(template: TemplatePayload, recipient: Record<string, unknown>): Promise<Buffer> {
