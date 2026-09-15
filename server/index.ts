@@ -154,7 +154,7 @@ function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayloa
   const certNumber = getCertificateNumber(template, recipient)
 
   // Subtle background tone
-  doc.rect(0, 0, 842, 595).fill('#fcfbf7')
+  doc.rect(0, 0, 842, 595).fill('#ffffff')
 
   // Outer primary accent frame
   doc.rect(20, 20, 802, 555).lineWidth(4).stroke(accentColor)
@@ -175,8 +175,8 @@ function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayloa
   drawCorner(808, 561, -1, -1)
 
   // Header Layout: Top Left Logo 2 and Top Right Logo 1
-  const logoMaxW = 105
-  const logoMaxH = 70
+  const logoMaxW = 120
+  const logoMaxH = 72
   const logoY = 48
   const isLogo2Active = Boolean(template.enableLogo2)
 
@@ -186,7 +186,7 @@ function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayloa
       const base64 = template.logo2.substring(template.logo2.indexOf('base64,') + 7)
       if (base64) {
         const logo2Buffer = Buffer.from(base64, 'base64')
-        doc.image(logo2Buffer, 52, logoY, { fit: [logoMaxW, logoMaxH], valign: 'center' })
+        doc.image(logo2Buffer, 48, logoY, { fit: [logoMaxW, logoMaxH], valign: 'center' })
       }
     } catch (err) {
       console.error('Failed to render logo2 in PDF:', err)
@@ -199,7 +199,7 @@ function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayloa
       const base64 = template.logo.substring(template.logo.indexOf('base64,') + 7)
       if (base64) {
         const logo1Buffer = Buffer.from(base64, 'base64')
-        doc.image(logo1Buffer, 842 - 52 - logoMaxW, logoY, { fit: [logoMaxW, logoMaxH], align: 'right', valign: 'center' })
+        doc.image(logo1Buffer, 842 - 48 - logoMaxW, logoY, { fit: [logoMaxW, logoMaxH], align: 'right', valign: 'center' })
       }
     } catch (err) {
       console.error('Failed to render logo1 in PDF:', err)
