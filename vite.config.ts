@@ -4,6 +4,7 @@ import { defineConfig, type Plugin } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import vueJsx from '@vitejs/plugin-vue-jsx'
 import vueDevTools from 'vite-plugin-vue-devtools'
+import type { Request, Response, NextFunction } from 'express'
 import expressApp from './server/index'
 
 function certificateApiPlugin(): Plugin {
@@ -12,7 +13,7 @@ function certificateApiPlugin(): Plugin {
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
         if (req.url?.startsWith('/api')) {
-          expressApp(req, res, next)
+          expressApp(req as Request, res as Response, next as NextFunction)
           return
         }
         next()
