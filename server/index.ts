@@ -227,14 +227,18 @@ function drawOfficialSeal(doc: PDFKit.PDFDocument, cx: number, cy: number, accen
   doc.restore()
 }
 
+const PAGE_W = 842
+const PAGE_H = 595
+const FRAME_PAD = 40
+const FOOTER_BLOCK_H = 130
+const MAX_SIG_BOX_Y = PAGE_H - FRAME_PAD - FOOTER_BLOCK_H
+
 function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayload, recipient: Record<string, unknown>) {
   const name = value(recipient, template.primaryField) || 'Penerima'
   const accentColor = template.accent || '#0f766e'
   const certNumber = getCertificateNumber(template, recipient)
-  const pageW = 842
-  const pageH = 595
 
-  doc.rect(0, 0, pageW, pageH).fill('#ffffff')
+  doc.rect(0, 0, PAGE_W, PAGE_H).fill('#ffffff')
 
   doc.rect(20, 20, 802, 555).lineWidth(4).stroke(accentColor)
   doc.rect(28, 28, 786, 539).lineWidth(1).stroke('#d7c28a')
@@ -273,7 +277,7 @@ function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayloa
       const base64 = template.logo.substring(template.logo.indexOf('base64,') + 7)
       if (base64) {
         const logo1Buffer = Buffer.from(base64, 'base64')
-        doc.image(logo1Buffer, pageW - 48 - logoMaxW, logoY, { fit: [logoMaxW, logoMaxH], align: 'right', valign: 'center' })
+        doc.image(logo1Buffer, PAGE_W - 48 - logoMaxW, logoY, { fit: [logoMaxW, logoMaxH], align: 'right', valign: 'center' })
       }
     } catch (err) {
       console.error('Failed to render logo1 in PDF:', err)
@@ -284,7 +288,7 @@ function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayloa
     doc.save()
     doc.circle(421, 68, 18).lineWidth(1.5).strokeColor('#d7c28a').stroke()
     doc.circle(421, 68, 14).lineWidth(1).strokeColor(accentColor).stroke()
-    doc.fillColor(accentColor).fontSize(15).font('Helvetica-Bold').text('✦', 415, 61)
+    doc.fillColor(accentColor).fontSize(15).font('Helvetica-Bold').text('✦', 415, 61, { lineBreak: false, width: 20 })
     doc.restore()
   }
 
@@ -300,23 +304,23 @@ function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayloa
     lineGap: bodyLineGap
   })
 
-  const footerReserveH = 150
   const minTopMargin = 118
-  const maxContentBottomY = pageH - 40 - footerReserveH
+  const maxBodyStartY = MAX_SIG_BOX_Y - 28 - bodyHeight - 12
+  let currentY = Math.min(minTopMargin, maxBodyStartY < minTopMargin ? maxBodyStartY : minTopMargin)
 
-  let currentY = minTopMargin
+  if (maxBodyStartY < minTopMargin) currentY = Math.max(FRAME_PAD + 30, maxBodyStartY)
 
   doc.fillColor(accentColor)
     .fontSize(12)
     .font('Helvetica-Bold')
-    .text(template.organization.toUpperCase(), 160, currentY, { align: 'center', width: 522, characterSpacing: 2 })
+    .text(template.organization.toUpperCase(), 160, currentY, { align: 'center', width: 522, characterSpacing: 2, lineBreak: false })
 
   currentY += 30
 
   doc.fillColor('#172327')
     .fontSize(36)
     .font('Times-Bold')
-    .text(template.title, 60, currentY, { align: 'center' })
+    .text(template.title, 60, currentY, { align: 'center', lineBreak: false })
 
   currentY += 50
 
@@ -324,7 +328,7 @@ function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayloa
     doc.fillColor('#4b5563')
       .fontSize(13)
       .font('Helvetica-Oblique')
-      .text(template.subtitle.trim(), 60, currentY, { align: 'center' })
+      .text(template.subtitle.trim(), 60, currentY, { align: 'center', lineBreak: false })
     currentY += 30
   }
 
@@ -332,21 +336,21 @@ function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayloa
   doc.fillColor('#606f7b')
     .fontSize(10.5)
     .font('Helvetica-Bold')
-    .text(typeText, 60, currentY, { align: 'center', characterSpacing: 2.5 })
+    .text(typeText, 60, currentY, { align: 'center', characterSpacing: 2.5, lineBreak: false })
 
   currentY += 34
 
   doc.fillColor('#4b5563')
     .fontSize(12.5)
     .font('Helvetica')
-    .text('Diberikan dengan penuh kehormatan kepada', 60, currentY, { align: 'center' })
+    .text('Diberikan dengan penuh kehormatan kepada', 60, currentY, { align: 'center', lineBreak: false })
 
   currentY += 32
 
   doc.fillColor(accentColor)
     .fontSize(36)
     .font('Times-BoldItalic')
-    .text(name, 50, currentY, { align: 'center' })
+    .text(name, 50, currentY, { align: 'center', lineBreak: false })
 
   currentY += 54
 
@@ -358,7 +362,7 @@ function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayloa
 
   const bodyStartY = currentY
   const bodyEndY = bodyStartY + bodyHeight + 12
-  const sigBoxY = Math.max(bodyEndY + 28, Math.min(462, maxContentBottomY - 4))
+  const sigBoxY = Math.min(MAX_SIG_BOX_Y, Math.max(bodyEndY + 28, 436))
 
   doc.fillColor('#334155')
     .fontSize(bodyFontSize)
@@ -379,11 +383,11 @@ function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayloa
     doc.fillColor('#64748b')
       .fontSize(8.5)
       .font('Helvetica-Bold')
-      .text('NO. SERTIFIKAT', 280, sealCY + 36, { width: 282, align: 'center', characterSpacing: 1.5 })
+      .text('NO. SERTIFIKAT', 280, sealCY + 36, { width: 282, align: 'center', characterSpacing: 1.5, lineBreak: false })
     doc.fillColor('#1e293b')
       .fontSize(10)
       .font('Helvetica')
-      .text(certNumber, 280, sealCY + 50, { width: 282, align: 'center', characterSpacing: 1.2 })
+      .text(certNumber, 280, sealCY + 50, { width: 282, align: 'center', characterSpacing: 1.2, lineBreak: false })
     doc.restore()
 
     const sig2Label = template.signatoryTitle2 || 'Mengetahui'
@@ -401,9 +405,9 @@ function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayloa
       }
     }
 
-    doc.fillColor('#172327').font('Times-Bold').fontSize(16).text(sig2Name, 55, sigBoxY + 88, { width: 210, align: 'center' })
+    doc.fillColor('#172327').font('Times-Bold').fontSize(16).text(sig2Name, 55, sigBoxY + 88, { width: 210, align: 'center', lineBreak: false })
     doc.moveTo(75, sigBoxY + 110).lineTo(245, sigBoxY + 110).lineWidth(1).strokeColor('#cbd5e1').stroke()
-    doc.fillColor('#64748b').font('Helvetica-Bold').fontSize(9.5).text(sig2Label, 55, sigBoxY + 115, { width: 210, align: 'center' })
+    doc.fillColor('#64748b').font('Helvetica-Bold').fontSize(9.5).text(sig2Label, 55, sigBoxY + 115, { width: 210, align: 'center', lineBreak: false })
   } else {
     const sealCY = sigBoxY + 38
     drawOfficialSeal(doc, 155, sealCY, accentColor, 'lg')
@@ -412,11 +416,11 @@ function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayloa
     doc.fillColor('#64748b')
       .fontSize(8.5)
       .font('Helvetica-Bold')
-      .text('NO. SERTIFIKAT', 250, sealCY + 32, { width: 342, align: 'center', characterSpacing: 1.5 })
+      .text('NO. SERTIFIKAT', 250, sealCY + 32, { width: 342, align: 'center', characterSpacing: 1.5, lineBreak: false })
     doc.fillColor('#1e293b')
       .fontSize(10)
       .font('Helvetica')
-      .text(certNumber, 250, sealCY + 46, { width: 342, align: 'center', characterSpacing: 1.2 })
+      .text(certNumber, 250, sealCY + 46, { width: 342, align: 'center', characterSpacing: 1.2, lineBreak: false })
     doc.restore()
   }
 
@@ -435,14 +439,14 @@ function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayloa
     }
   }
 
-  doc.fillColor('#172327').font('Times-Bold').fontSize(16).text(sig1Name, 577, sigBoxY + 88, { width: 210, align: 'center' })
+  doc.fillColor('#172327').font('Times-Bold').fontSize(16).text(sig1Name, 577, sigBoxY + 88, { width: 210, align: 'center', lineBreak: false })
   doc.moveTo(597, sigBoxY + 110).lineTo(767, sigBoxY + 110).lineWidth(1).strokeColor('#cbd5e1').stroke()
-  doc.fillColor('#64748b').font('Helvetica-Bold').fontSize(9.5).text(sig1Label, 577, sigBoxY + 115, { width: 210, align: 'center' })
+  doc.fillColor('#64748b').font('Helvetica-Bold').fontSize(9.5).text(sig1Label, 577, sigBoxY + 115, { width: 210, align: 'center', lineBreak: false })
 }
 
 function generateSinglePDFBuffer(template: TemplatePayload, recipient: Record<string, unknown>): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 42 })
+    const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 0, autoFirstPage: true })
     const chunks: Buffer[] = []
     doc.on('data', (chunk) => chunks.push(chunk))
     doc.on('end', () => resolve(Buffer.concat(chunks)))
@@ -477,14 +481,14 @@ app.post('/api/certificates/batch-pdf', (req, res) => {
     return res.status(400).json({ message: 'Template dan daftar penerima wajib ada.' })
   }
   try {
-    const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 42, autoFirstPage: false })
+    const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 0, autoFirstPage: false })
     const filename = `semua-sertifikat-${(template.name || 'sertifikat').toLowerCase().replace(/[^a-z0-9]+/gi, '-')}.pdf`
     res.setHeader('Content-Type', 'application/pdf')
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
     doc.pipe(res)
 
     for (const recipient of recipients) {
-      doc.addPage({ size: 'A4', layout: 'landscape', margin: 42 })
+      doc.addPage({ size: 'A4', layout: 'landscape', margin: 0 })
       renderCertificatePage(doc, template, recipient)
     }
     doc.end()
