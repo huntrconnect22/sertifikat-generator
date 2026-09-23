@@ -361,6 +361,73 @@ function useTemplate(item: Template) {
   status.value = `Template "${item.name}" berhasil diterapkan`
 }
 const isExporting = ref(false)
+const jobProgress = ref<{ kind: string; progress: number; done: number; total: number } | null>(null)
+let jobPollTimer: ReturnType<typeof setInterval> | null = null
+const stopJobPoll = () => { if (jobPollTimer) { clearInterval(jobPollTimer); jobPollTimer = null } }
+
+async function runAsyncJob(kind: 'zip' | 'batch-pdf'): Promise<{ ok: boolean; blob?: Blob; filename?: string; message?: string }> {
+  const initPath = kind === 'zip' ? '/api/certificates/zip-init' : '/api/certificates/batch-pdf-init'
+  try {
+    const init = await fetch(initPath, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ template: template.value, recipients: recipients.value })
+    })
+    if (!init.ok) {
+      return { ok: false, message: (await init.json()).message }
+    }
+    const { jobId, total } = (await init.json()) as { jobId: string; total: number }
+    jobProgress.value = { kind, progress: 0, done: 0, total }
+    return await new Promise((resolve) => {
+      let checks = 0
+      const maxChecks = 30 * 60 * 2  // ~60 menit max
+      jobPollTimer = setInterval(async () => {
+        checks++
+        if (checks > maxChecks) {
+          stopJobPoll()
+          resolve({ ok: false, message: 'Job timeout (lebih dari 60 menit).' })
+          return
+        }
+        try {
+          const res = await fetch(`/api/certificates/job-status/${jobId}`)
+          if (!res.ok) {
+            stopJobPoll()
+            resolve({ ok: false, message: (await res.json()).message })
+            return
+          }
+          const s = (await res.json()) as { status: string; progress: number; done: number; total: number; errorMessage?: string }
+          jobProgress.value = { kind, progress: s.progress, done: s.done, total: s.total }
+          if (s.status === 'error') {
+            stopJobPoll()
+            resolve({ ok: false, message: s.errorMessage || 'Job gagal.' })
+            return
+          }
+          if (s.status === 'done') {
+            stopJobPoll()
+            try {
+              const dl = await fetch(`/api/certificates/job-download/${jobId}`)
+              if (!dl.ok) {
+                resolve({ ok: false, message: (await dl.json()).message })
+                return
+              }
+              const disp = dl.headers.get('Content-Disposition') || ''
+              const m = disp.match(/filename="([^"]+)"/)
+              const blob = await dl.blob()
+              resolve({ ok: true, blob, filename: m?.[1] ?? (kind === 'zip' ? 'sertifikat.zip' : 'sertifikat.pdf') })
+            } catch {
+              resolve({ ok: false, message: 'Gagal mengunduh hasil job.' })
+            }
+          }
+        } catch {
+          // ignore network blips, keep polling
+        }
+      }, 1200)
+    })
+  } catch {
+    return { ok: false, message: 'Gagal memulai job. Periksa koneksi server.' }
+  }
+}
+
 async function exportPDF() {
   if (!recipients.value.length) { status.value = 'Impor data penerima terlebih dahulu.'; return }
   isExporting.value = true
@@ -389,19 +456,18 @@ async function exportPDF() {
 async function exportBatchPDF() {
   if (!recipients.value.length) { status.value = 'Impor data penerima terlebih dahulu.'; return }
   isExporting.value = true
-  status.value = `Menyiapkan ${recipients.value.length} sertifikat dalam 1 file PDF…`
+  jobProgress.value = { kind: 'batch-pdf', progress: 0, done: 0, total: recipients.value.length }
+  status.value = `Memulai job pembuatan ${recipients.value.length} sertifikat (PDF gabungan)…`
   try {
-    const response = await fetch('/api/certificates/batch-pdf', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ template: template.value, recipients: recipients.value })
-    })
-    if (!response.ok) { status.value = (await response.json()).message; return }
-    const url = URL.createObjectURL(await response.blob())
+    const result = await runAsyncJob('batch-pdf')
+    if (!result.ok || !result.blob) {
+      status.value = result.message || 'Gagal mengunduh batch PDF'
+      return
+    }
+    const url = URL.createObjectURL(result.blob)
     const a = document.createElement('a')
     a.href = url
-    const safeName = (template.value.name || 'sertifikat').toLowerCase().replace(/[^a-z0-9]+/gi, '-')
-    a.download = `semua-sertifikat-${safeName}.pdf`
+    a.download = result.filename || `semua-sertifikat-${(template.value.name || 'sertifikat').toLowerCase().replace(/[^a-z0-9]+/gi, '-')}.pdf`
     a.click()
     URL.revokeObjectURL(url)
     status.value = `Berhasil mengunduh semua (${recipients.value.length}) sertifikat dalam 1 file PDF!`
@@ -409,25 +475,25 @@ async function exportBatchPDF() {
     status.value = 'Gagal mengunduh batch PDF'
   } finally {
     isExporting.value = false
+    jobProgress.value = null
   }
 }
 
 async function exportBatchZIP() {
   if (!recipients.value.length) { status.value = 'Impor data penerima terlebih dahulu.'; return }
   isExporting.value = true
-  status.value = `Mengompres ${recipients.value.length} file PDF ke dalam ZIP…`
+  jobProgress.value = { kind: 'zip', progress: 0, done: 0, total: recipients.value.length }
+  status.value = `Memulai job pembuatan ${recipients.value.length} sertifikat (ZIP)…`
   try {
-    const response = await fetch('/api/certificates/zip', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ template: template.value, recipients: recipients.value })
-    })
-    if (!response.ok) { status.value = (await response.json()).message; return }
-    const url = URL.createObjectURL(await response.blob())
+    const result = await runAsyncJob('zip')
+    if (!result.ok || !result.blob) {
+      status.value = result.message || 'Gagal mengunduh ZIP sertifikat'
+      return
+    }
+    const url = URL.createObjectURL(result.blob)
     const a = document.createElement('a')
     a.href = url
-    const safeName = (template.value.name || 'sertifikat').toLowerCase().replace(/[^a-z0-9]+/gi, '-')
-    a.download = `sertifikat-lengkap-${safeName}.zip`
+    a.download = result.filename || `sertifikat-lengkap-${(template.value.name || 'sertifikat').toLowerCase().replace(/[^a-z0-9]+/gi, '-')}.zip`
     a.click()
     URL.revokeObjectURL(url)
     status.value = `Berhasil mengunduh ${recipients.value.length} sertifikat dalam file ZIP!`
@@ -435,6 +501,7 @@ async function exportBatchZIP() {
     status.value = 'Gagal mengunduh ZIP sertifikat'
   } finally {
     isExporting.value = false
+    jobProgress.value = null
   }
 }
 onMounted(() => { restoreDraft(); checkConnection() })
@@ -609,6 +676,14 @@ onMounted(() => { restoreDraft(); checkConnection() })
               Unduh Arsip ZIP (.zip) <b>{{ recipients.length }}</b>
             </button>
           </div>
+          <div v-if="jobProgress" class="job-progress" role="status" aria-live="polite">
+            <div class="jp-top">
+              <span class="jp-label">{{ jobProgress.kind === 'zip' ? 'Pembuatan Arsip ZIP' : 'Pembuatan PDF Gabungan' }}</span>
+              <span class="jp-pct">{{ jobProgress.progress }}%</span>
+            </div>
+            <div class="jp-track"><div class="jp-bar" :style="{ width: jobProgress.progress + '%' }"></div></div>
+            <div class="jp-sub">{{ jobProgress.done }} / {{ jobProgress.total }} sertifikat selesai diproses. Silakan jangan tutup halaman.</div>
+          </div>
         </div>
       </section></div>
       <section class="data-card"><div class="section-title"><span class="step">PESERTA</span><div><h2>Data Penerima</h2><p>Daftar nama dan data peserta. Gunakan kolom Excel sebagai placeholder teks sertifikat.</p></div><div class="data-actions"><button v-if="recipients.length" class="clear-btn" title="Hapus semua data" @click="clearTable">✕ Hapus Data</button><button class="upload" @click="fileInput?.click()">↑ Impor Excel</button><input ref="fileInput" hidden type="file" accept=".xlsx,.xls" @change="importExcel" /></div></div><div v-if="recipients.length" class="table-wrap"><table><thead><tr><th>#</th><th v-for="header in headers" :key="header">{{ header }}</th><th></th></tr></thead><tbody><tr v-for="(row, index) in recipients" :key="index" :class="{ chosen: selectedIndex === index }"><td>{{ String(index + 1).padStart(2, '0') }}</td><td v-for="header in headers" :key="header">{{ row[header] }}</td><td><button class="select" @click="selectedIndex = index">{{ selectedIndex === index ? 'Dipilih' : 'Pilih' }}</button></td></tr></tbody></table></div><div v-else class="empty">Belum ada data. Impor file Excel dengan baris pertama sebagai header.</div></section>
@@ -707,4 +782,5 @@ onMounted(() => { restoreDraft(); checkConnection() })
 .modal-close-btn:hover{background:#e2e8f0;color:#0f172a}
 .modal-body{padding:24px 26px;overflow-y:auto}
 .modal-grid{grid-template-columns:repeat(auto-fill,minmax(240px,1fr))}
+.job-progress{border:1.5px solid #d8e3de;border-radius:12px;padding:14px 16px;background:#f8faf9;display:flex;flex-direction:column;gap:8px;animation:fadeIn .2s ease}.jp-top{display:flex;align-items:center;justify-content:space-between}.jp-label{font:600 12px 'DM Sans';color:#244a4c}.jp-pct{font:700 13px 'DM Mono';color:#1e5a55;background:#e1eee8;padding:2px 8px;border-radius:999px}.jp-track{width:100%;height:10px;background:#e5ebe7;border-radius:999px;overflow:hidden}.jp-bar{height:100%;width:0;background:linear-gradient(90deg,#1e5a55,#3d8b77);border-radius:999px;transition:width .35s ease;box-shadow:0 1px 3px rgba(30,90,85,.35)}.jp-sub{font:500 11px 'DM Sans';color:#61726e}@keyframes fadeIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
 </style>

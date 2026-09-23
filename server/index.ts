@@ -2,9 +2,13 @@ import 'dotenv/config'
 import { ZipArchive } from 'archiver'
 import cors from 'cors'
 import express from 'express'
+import fs from 'fs'
 import mongoose, { Schema } from 'mongoose'
 import multer from 'multer'
+import os from 'os'
+import path from 'path'
 import PDFDocument from 'pdfkit'
+import { randomUUID } from 'crypto'
 import * as XLSX from 'xlsx'
 
 const app = express()
@@ -474,7 +478,7 @@ app.post('/api/certificates/pdf', async (req, res) => {
   }
 })
 
-// Batch PDF Download: All certificates combined into one multi-page PDF
+// Batch PDF Download: All certificates combined into one multi-page PDF (streaming for quick jobs)
 app.post('/api/certificates/batch-pdf', async (req, res) => {
   const { template, recipients } = req.body as { template: TemplatePayload; recipients: Record<string, unknown>[] }
   if (!template || !recipients || !recipients.length) {
@@ -508,54 +512,75 @@ app.post('/api/certificates/batch-pdf', async (req, res) => {
   }
 })
 
-// Batch ZIP Download: Individual PDF for each recipient packaged in a ZIP
-app.post('/api/certificates/zip', async (req, res) => {
-  const { template, recipients } = req.body as { template: TemplatePayload; recipients: Record<string, unknown>[] }
-  if (!template || !recipients || !recipients.length) {
-    return res.status(400).json({ message: 'Template dan daftar penerima wajib ada.' })
+// ============== ASYNC JOB SYSTEM (BYPASS CLOUDFLARE 100s TIMEOUT) ==============
+type JobKind = 'zip' | 'batch-pdf'
+type JobStatus = 'queued' | 'processing' | 'done' | 'error'
+interface Job {
+  id: string
+  kind: JobKind
+  status: JobStatus
+  progress: number        // 0..100
+  total: number
+  done: number
+  filename?: string
+  filePath?: string
+  sizeBytes?: number
+  errorMessage?: string
+  createdAt: number
+  expiresAt: number
+}
+
+const jobs = new Map<string, Job>()
+const TMP_DIR = fs.existsSync('/tmp') ? '/tmp' : os.tmpdir()
+const JOB_TTL_MS = 60 * 60 * 1000      // 1 jam
+const JOB_GC_MS = 10 * 60 * 1000        // GC setiap 10 menit
+
+if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true })
+
+setInterval(() => {
+  const now = Date.now()
+  for (const [id, job] of jobs) {
+    if (now >= job.expiresAt) {
+      if (job.filePath && fs.existsSync(job.filePath)) {
+        try { fs.unlinkSync(job.filePath) } catch { /* ignore */ }
+      }
+      jobs.delete(id)
+    }
   }
+}, JOB_GC_MS).unref()
 
+function createJob(kind: JobKind, total: number, filename: string): Job {
+  const id = randomUUID()
+  const job: Job = {
+    id,
+    kind,
+    status: 'queued',
+    progress: 0,
+    total,
+    done: 0,
+    filename,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + JOB_TTL_MS,
+  }
+  jobs.set(id, job)
+  return job
+}
+
+async function buildZipJob(template: TemplatePayload, recipients: Record<string, unknown>[], job: Job) {
   try {
-    const filename = `sertifikat-lengkap-${(template.name || 'sertifikat').toLowerCase().replace(/[^a-z0-9]+/gi, '-')}.zip`
-    res.status(200)
-    res.setHeader('Content-Type', 'application/zip')
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
-    res.setHeader('Transfer-Encoding', 'chunked')
-    res.setHeader('X-Content-Type-Options', 'nosniff')
-    res.flushHeaders?.()
-
-    const archive = new ZipArchive({ zlib: { level: 3 }, forceZip64: true, comment: '' })
-    archive.pipe(res, { end: true })
-
-    let watchdogTimer: NodeJS.Timeout | null = null
-    const resetWatchdog = () => {
-      if (watchdogTimer) clearTimeout(watchdogTimer)
-    }
-    const tickWatchdog = () => {
-      resetWatchdog()
-      watchdogTimer = setTimeout(() => {
-        try {
-          (archive as unknown as { abort?: () => void }).abort?.()
-        } catch {
-          /* ignore */
-        }
-      }, 180_000)
-    }
-    tickWatchdog()
-
-    archive.on('error', (err: Error) => {
-      console.error('Archive error:', err)
-      resetWatchdog()
-      if (!res.headersSent) res.status(500).json({ message: 'Gagal membuat file ZIP' })
-    })
-    archive.on('close', () => resetWatchdog())
-    archive.on('end', () => resetWatchdog())
-    res.on('close', () => resetWatchdog())
-
+    job.status = 'processing'
+    const outPath = path.join(TMP_DIR, `certzip-${job.id}.zip`)
+    job.filePath = outPath
     const usedFilenames = new Map<string, number>()
     const total = recipients.length
-    const concurrency = Math.min(Math.max(2, Math.ceil(total / 50) + 2), 6)
+
+    const archive = new ZipArchive({ zlib: { level: 3 }, forceZip64: true })
+    const outStream = fs.createWriteStream(outPath)
+    archive.pipe(outStream)
+
     let cursor = 0
+    const concurrency = Math.min(Math.max(2, Math.ceil(total / 50) + 2), 6)
+    let completed = 0
 
     const worker = async () => {
       while (cursor < total) {
@@ -570,10 +595,14 @@ app.post('/api/certificates/zip', async (req, res) => {
           : `sertifikat-${safeName}.pdf`
         try {
           const pdfBuffer = await generateSinglePDFBuffer(template, r)
-          archive.append(pdfBuffer, { name: entryName, date: new Date(), store: false })
+          archive.append(pdfBuffer, { name: entryName, date: new Date() })
         } catch (err) {
-          console.error(`Skip PDF for ${recipientName}:`, err)
+          console.error(`Skip PDF ${recipientName}:`, err)
         }
+        completed++
+        job.done = completed
+        job.progress = Math.min(99, Math.round((completed / total) * 100))
+        if (completed % 10 === 0) await new Promise<void>((r) => setImmediate(r))
       }
     }
 
@@ -581,12 +610,168 @@ app.post('/api/certificates/zip', async (req, res) => {
     for (let w = 0; w < concurrency; w++) workers.push(worker())
     await Promise.all(workers)
 
-    resetWatchdog()
     await archive.finalize()
+    await new Promise<void>((resolve, reject) => {
+      outStream.once('finish', resolve)
+      outStream.once('error', reject)
+    })
+
+    const stat = fs.statSync(outPath)
+    job.sizeBytes = stat.size
+    job.progress = 100
+    job.done = total
+    job.status = 'done'
   } catch (err) {
-    console.error('Error generating ZIP:', err)
-    if (!res.headersSent) res.status(500).json({ message: 'Gagal membuat file ZIP' })
+    console.error('ZIP job failed:', err)
+    job.status = 'error'
+    job.errorMessage = err instanceof Error ? err.message : 'Gagal membuat ZIP'
   }
+}
+
+async function buildBatchPdfJob(template: TemplatePayload, recipients: Record<string, unknown>[], job: Job) {
+  try {
+    job.status = 'processing'
+    const outPath = path.join(TMP_DIR, `certpdf-${job.id}.pdf`)
+    job.filePath = outPath
+    const total = recipients.length
+    const outStream = fs.createWriteStream(outPath)
+    const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 0, autoFirstPage: false, bufferPages: false })
+    doc.pipe(outStream)
+
+    for (let i = 0; i < total; i++) {
+      doc.addPage({ size: 'A4', layout: 'landscape', margin: 0 })
+      renderCertificatePage(doc, template, recipients[i]!)
+      if ((i + 1) % 20 === 0) {
+        job.done = i + 1
+        job.progress = Math.min(99, Math.round(((i + 1) / total) * 100))
+        await new Promise<void>((r) => setImmediate(r))
+      }
+    }
+    doc.end()
+
+    await new Promise<void>((resolve, reject) => {
+      outStream.once('finish', resolve)
+      outStream.once('error', reject)
+    })
+    const stat = fs.statSync(outPath)
+    job.sizeBytes = stat.size
+    job.progress = 100
+    job.done = total
+    job.status = 'done'
+  } catch (err) {
+    console.error('Batch-PDF job failed:', err)
+    job.status = 'error'
+    job.errorMessage = err instanceof Error ? err.message : 'Gagal membuat PDF gabungan'
+  }
+}
+
+// ASYNC INIT (Fast response < 100ms)
+app.post('/api/certificates/zip-init', async (req, res) => {
+  const { template, recipients } = req.body as { template: TemplatePayload; recipients: Record<string, unknown>[] }
+  if (!template || !recipients || !recipients.length) {
+    return res.status(400).json({ message: 'Template dan daftar penerima wajib ada.' })
+  }
+  const filename = `sertifikat-lengkap-${(template.name || 'sertifikat').toLowerCase().replace(/[^a-z0-9]+/gi, '-')}.zip`
+  const job = createJob('zip', recipients.length, filename)
+  setImmediate(() => buildZipJob(template, recipients, job))
+  res.status(200).json({ jobId: job.id, total: job.total })
+})
+
+app.post('/api/certificates/batch-pdf-init', async (req, res) => {
+  const { template, recipients } = req.body as { template: TemplatePayload; recipients: Record<string, unknown>[] }
+  if (!template || !recipients || !recipients.length) {
+    return res.status(400).json({ message: 'Template dan daftar penerima wajib ada.' })
+  }
+  const filename = `semua-sertifikat-${(template.name || 'sertifikat').toLowerCase().replace(/[^a-z0-9]+/gi, '-')}.pdf`
+  const job = createJob('batch-pdf', recipients.length, filename)
+  setImmediate(() => buildBatchPdfJob(template, recipients, job))
+  res.status(200).json({ jobId: job.id, total: job.total })
+})
+
+// Polling status (hit tiap 1-2 detik)
+app.get('/api/certificates/job-status/:jobId', (req, res) => {
+  const job = jobs.get(req.params.jobId)
+  if (!job) return res.status(404).json({ message: 'Job tidak ditemukan / sudah kadaluarsa.' })
+  res.status(200).json({
+    id: job.id,
+    kind: job.kind,
+    status: job.status,
+    progress: job.progress,
+    total: job.total,
+    done: job.done,
+    filename: job.filename,
+    sizeBytes: job.sizeBytes,
+    errorMessage: job.errorMessage,
+  })
+})
+
+// Download hasil job (hanya kalau status done)
+app.get('/api/certificates/job-download/:jobId', (req, res) => {
+  const job = jobs.get(req.params.jobId)
+  if (!job) return res.status(404).json({ message: 'Job tidak ditemukan / sudah kadaluarsa.' })
+  if (job.status === 'error') return res.status(500).json({ message: job.errorMessage || 'Job gagal.' })
+  if (job.status !== 'done' || !job.filePath) return res.status(409).json({ message: 'Job belum selesai.' })
+  if (!fs.existsSync(job.filePath)) return res.status(410).json({ message: 'File sudah dihapus.' })
+
+  const contentType = job.kind === 'zip' ? 'application/zip' : 'application/pdf'
+  res.setHeader('Content-Type', contentType)
+  res.setHeader('Content-Disposition', `attachment; filename="${job.filename || 'download'}"`)
+  res.setHeader('Content-Length', job.sizeBytes || fs.statSync(job.filePath).size)
+
+  const stream = fs.createReadStream(job.filePath)
+  stream.pipe(res)
+  stream.on('error', () => res.status(500).end())
+  res.on('close', () => {
+    try { stream.close(); fs.unlinkSync(job.filePath!) } catch { /* ignore */ }
+    jobs.delete(job.id)
+  })
+})
+
+// Legacy ZIP / batch-pdf endpoints -> direct delegate to async for large, stream for small
+app.post('/api/certificates/zip', async (req, res) => {
+  const { template, recipients } = req.body as { template: TemplatePayload; recipients: Record<string, unknown>[] }
+  if (!template || !recipients || !recipients.length) {
+    return res.status(400).json({ message: 'Template dan daftar penerima wajib ada.' })
+  }
+  if (recipients.length <= 30) {
+    try {
+      const filename = `sertifikat-lengkap-${(template.name || 'sertifikat').toLowerCase().replace(/[^a-z0-9]+/gi, '-')}.zip`
+      res.status(200)
+      res.setHeader('Content-Type', 'application/zip')
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+      res.setHeader('Transfer-Encoding', 'chunked')
+      res.flushHeaders?.()
+
+      const archive = new ZipArchive({ zlib: { level: 3 }, forceZip64: true })
+      archive.pipe(res, { end: true })
+      const usedFilenames = new Map<string, number>()
+      for (let i = 0; i < recipients.length; i++) {
+        const r = recipients[i]!
+        const recipientName = value(r, template.primaryField) || `Penerima-${i + 1}`
+        const safeName = recipientName.toLowerCase().replace(/[^a-z0-9]+/gi, '-')
+        const count = (usedFilenames.get(safeName) || 0) + 1
+        usedFilenames.set(safeName, count)
+        const entryName = count > 1 ? `sertifikat-${safeName}-${count}.pdf` : `sertifikat-${safeName}.pdf`
+        try {
+          const pdfBuffer = await generateSinglePDFBuffer(template, r)
+          archive.append(pdfBuffer, { name: entryName, date: new Date() })
+        } catch (err) {
+          console.error(`Skip PDF ${recipientName}:`, err)
+        }
+      }
+      await archive.finalize()
+    } catch (err) {
+      console.error('Error generating ZIP:', err)
+      if (!res.headersSent) res.status(500).json({ message: 'Gagal membuat file ZIP' })
+    }
+    return
+  }
+  // Large batch: return jobId untuk polling (frontend yang support async akan mengikuti)
+  res.status(202).json({
+    message: 'Batch besar terdeteksi, gunakan mode async dengan /zip-init.',
+    total: recipients.length,
+    initEndpoint: '/api/certificates/zip-init',
+  })
 })
 
 export default app
