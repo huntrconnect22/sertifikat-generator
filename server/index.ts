@@ -475,21 +475,31 @@ app.post('/api/certificates/pdf', async (req, res) => {
 })
 
 // Batch PDF Download: All certificates combined into one multi-page PDF
-app.post('/api/certificates/batch-pdf', (req, res) => {
+app.post('/api/certificates/batch-pdf', async (req, res) => {
   const { template, recipients } = req.body as { template: TemplatePayload; recipients: Record<string, unknown>[] }
   if (!template || !recipients || !recipients.length) {
     return res.status(400).json({ message: 'Template dan daftar penerima wajib ada.' })
   }
   try {
-    const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 0, autoFirstPage: false })
     const filename = `semua-sertifikat-${(template.name || 'sertifikat').toLowerCase().replace(/[^a-z0-9]+/gi, '-')}.pdf`
+    res.status(200)
     res.setHeader('Content-Type', 'application/pdf')
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
-    doc.pipe(res)
+    res.setHeader('Transfer-Encoding', 'chunked')
+    res.flushHeaders?.()
 
-    for (const recipient of recipients) {
-      doc.addPage({ size: 'A4', layout: 'landscape', margin: 0 })
-      renderCertificatePage(doc, template, recipient)
+    const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 0, autoFirstPage: false, bufferPages: false })
+    doc.pipe(res, { end: true })
+
+    const total = recipients.length
+    const chunkSize = 40
+    for (let start = 0; start < total; start += chunkSize) {
+      const end = Math.min(start + chunkSize, total)
+      for (let i = start; i < end; i++) {
+        doc.addPage({ size: 'A4', layout: 'landscape', margin: 0 })
+        renderCertificatePage(doc, template, recipients[i]!)
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve))
     }
     doc.end()
   } catch (err) {
@@ -507,38 +517,71 @@ app.post('/api/certificates/zip', async (req, res) => {
 
   try {
     const filename = `sertifikat-lengkap-${(template.name || 'sertifikat').toLowerCase().replace(/[^a-z0-9]+/gi, '-')}.zip`
+    res.status(200)
     res.setHeader('Content-Type', 'application/zip')
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    res.setHeader('Transfer-Encoding', 'chunked')
+    res.setHeader('X-Content-Type-Options', 'nosniff')
+    res.flushHeaders?.()
 
-    const archive = new ZipArchive({ zlib: { level: 6 }, forceZip64: true })
-    archive.pipe(res)
+    const archive = new ZipArchive({ zlib: { level: 3 }, forceZip64: true, comment: '' })
+    archive.pipe(res, { end: true })
+
+    let watchdogTimer: NodeJS.Timeout | null = null
+    const resetWatchdog = () => {
+      if (watchdogTimer) clearTimeout(watchdogTimer)
+    }
+    const tickWatchdog = () => {
+      resetWatchdog()
+      watchdogTimer = setTimeout(() => {
+        try {
+          (archive as unknown as { abort?: () => void }).abort?.()
+        } catch {
+          /* ignore */
+        }
+      }, 180_000)
+    }
+    tickWatchdog()
 
     archive.on('error', (err: Error) => {
       console.error('Archive error:', err)
+      resetWatchdog()
       if (!res.headersSent) res.status(500).json({ message: 'Gagal membuat file ZIP' })
     })
+    archive.on('close', () => resetWatchdog())
+    archive.on('end', () => resetWatchdog())
+    res.on('close', () => resetWatchdog())
 
     const usedFilenames = new Map<string, number>()
-    const pdfBuffers: { buffer: Buffer; name: string }[] = []
+    const total = recipients.length
+    const concurrency = Math.min(Math.max(2, Math.ceil(total / 50) + 2), 6)
+    let cursor = 0
 
-    for (let i = 0; i < recipients.length; i++) {
-      const r = recipients[i]!
-      const recipientName = value(r, template.primaryField) || `Penerima-${i + 1}`
-      const safeName = recipientName.toLowerCase().replace(/[^a-z0-9]+/gi, '-')
-      const count = (usedFilenames.get(safeName) || 0) + 1
-      usedFilenames.set(safeName, count)
-      const entryName = count > 1
-        ? `sertifikat-${safeName}-${count}.pdf`
-        : `sertifikat-${safeName}.pdf`
-
-      const pdfBuffer = await generateSinglePDFBuffer(template, r)
-      pdfBuffers.push({ buffer: pdfBuffer, name: entryName })
+    const worker = async () => {
+      while (cursor < total) {
+        const i = cursor++
+        const r = recipients[i]!
+        const recipientName = value(r, template.primaryField) || `Penerima-${i + 1}`
+        const safeName = recipientName.toLowerCase().replace(/[^a-z0-9]+/gi, '-')
+        const count = (usedFilenames.get(safeName) || 0) + 1
+        usedFilenames.set(safeName, count)
+        const entryName = count > 1
+          ? `sertifikat-${safeName}-${count}.pdf`
+          : `sertifikat-${safeName}.pdf`
+        try {
+          const pdfBuffer = await generateSinglePDFBuffer(template, r)
+          archive.append(pdfBuffer, { name: entryName, date: new Date(), store: false })
+        } catch (err) {
+          console.error(`Skip PDF for ${recipientName}:`, err)
+        }
+      }
     }
 
-    for (const entry of pdfBuffers) {
-      archive.append(entry.buffer, { name: entry.name, date: new Date() })
-    }
+    const workers: Promise<void>[] = []
+    for (let w = 0; w < concurrency; w++) workers.push(worker())
+    await Promise.all(workers)
 
+    resetWatchdog()
     await archive.finalize()
   } catch (err) {
     console.error('Error generating ZIP:', err)
