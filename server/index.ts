@@ -231,16 +231,14 @@ function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayloa
   const name = value(recipient, template.primaryField) || 'Penerima'
   const accentColor = template.accent || '#0f766e'
   const certNumber = getCertificateNumber(template, recipient)
+  const pageW = 842
+  const pageH = 595
 
-  // Subtle background tone
-  doc.rect(0, 0, 842, 595).fill('#ffffff')
+  doc.rect(0, 0, pageW, pageH).fill('#ffffff')
 
-  // Outer primary accent frame
   doc.rect(20, 20, 802, 555).lineWidth(4).stroke(accentColor)
-  // Inner thin border
   doc.rect(28, 28, 786, 539).lineWidth(1).stroke('#d7c28a')
 
-  // Modern ornamental geometric corner brackets
   const drawCorner = (x: number, y: number, dx: number, dy: number) => {
     doc.save()
     doc.lineWidth(2).strokeColor(accentColor)
@@ -253,13 +251,11 @@ function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayloa
   drawCorner(34, 561, 1, -1)
   drawCorner(808, 561, -1, -1)
 
-  // Header Layout: Top Left Logo 2 and Top Right Logo 1
   const logoMaxW = 120
   const logoMaxH = 72
   const logoY = 48
   const isLogo2Active = Boolean(template.enableLogo2)
 
-  // Logo 2 (Kiri Atas) - hanya jika di-enable
   if (isLogo2Active && template.logo2 && template.logo2.includes('base64,')) {
     try {
       const base64 = template.logo2.substring(template.logo2.indexOf('base64,') + 7)
@@ -272,20 +268,18 @@ function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayloa
     }
   }
 
-  // Logo 1 (Kanan Atas)
   if (template.logo && template.logo.includes('base64,')) {
     try {
       const base64 = template.logo.substring(template.logo.indexOf('base64,') + 7)
       if (base64) {
         const logo1Buffer = Buffer.from(base64, 'base64')
-        doc.image(logo1Buffer, 842 - 48 - logoMaxW, logoY, { fit: [logoMaxW, logoMaxH], align: 'right', valign: 'center' })
+        doc.image(logo1Buffer, pageW - 48 - logoMaxW, logoY, { fit: [logoMaxW, logoMaxH], align: 'right', valign: 'center' })
       }
     } catch (err) {
       console.error('Failed to render logo1 in PDF:', err)
     }
   }
 
-  // If neither active logo is provided, show elegant center emblem
   if (!template.logo && (!isLogo2Active || !template.logo2)) {
     doc.save()
     doc.circle(421, 68, 18).lineWidth(1.5).strokeColor('#d7c28a').stroke()
@@ -294,96 +288,104 @@ function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayloa
     doc.restore()
   }
 
-  // Mulai konten dengan ritme vertikal yang seimbang (harmonious vertical flow)
-  let currentY = 72
+  const bodyText = interpolate(template.body, recipient, template)
+  const bodyFontSize = 13
+  const bodyWidth = 662
+  const bodyLineGap = 6
 
-  // 1. Organization Header
+  doc.font('Helvetica').fontSize(bodyFontSize)
+  const bodyHeight = doc.heightOfString(bodyText, {
+    width: bodyWidth,
+    align: 'center',
+    lineGap: bodyLineGap
+  })
+
+  const footerReserveH = 150
+  const minTopMargin = 118
+  const maxContentBottomY = pageH - 40 - footerReserveH
+
+  let currentY = minTopMargin
+
   doc.fillColor(accentColor)
     .fontSize(12)
     .font('Helvetica-Bold')
     .text(template.organization.toUpperCase(), 160, currentY, { align: 'center', width: 522, characterSpacing: 2 })
 
-  currentY += 26
+  currentY += 30
 
-  // 2. Certificate Main Title
   doc.fillColor('#172327')
     .fontSize(36)
     .font('Times-Bold')
     .text(template.title, 60, currentY, { align: 'center' })
 
-  currentY += 46
+  currentY += 50
 
-  // 3. Certificate Subtitle (jika ada)
   if (template.subtitle && template.subtitle.trim()) {
     doc.fillColor('#4b5563')
       .fontSize(13)
       .font('Helvetica-Oblique')
       .text(template.subtitle.trim(), 60, currentY, { align: 'center' })
-    currentY += 26
+    currentY += 30
   }
 
-  // 4. Badge pill type
   const typeText = `SERTIFIKAT ${template.type.toUpperCase()}`
   doc.fillColor('#606f7b')
     .fontSize(10.5)
     .font('Helvetica-Bold')
     .text(typeText, 60, currentY, { align: 'center', characterSpacing: 2.5 })
 
-  currentY += 30
+  currentY += 34
 
-  // 5. Awarded text
   doc.fillColor('#4b5563')
     .fontSize(12.5)
     .font('Helvetica')
     .text('Diberikan dengan penuh kehormatan kepada', 60, currentY, { align: 'center' })
 
-  currentY += 28
+  currentY += 32
 
-  // 6. Recipient Name
   doc.fillColor(accentColor)
     .fontSize(36)
     .font('Times-BoldItalic')
     .text(name, 50, currentY, { align: 'center' })
 
-  currentY += 48
+  currentY += 54
 
-  // 7. Elegant divider under name with center jewel
   doc.moveTo(210, currentY).lineTo(390, currentY).lineWidth(1.2).strokeColor('#d7c28a').stroke()
   doc.polygon([421, currentY - 4.5], [427, currentY], [421, currentY + 4.5], [415, currentY]).fillColor(accentColor).fill()
   doc.moveTo(452, currentY).lineTo(632, currentY).lineWidth(1.2).strokeColor('#d7c28a').stroke()
 
-  currentY += 20
+  currentY += 26
 
-  // 8. Body Description
+  const bodyStartY = currentY
+  const bodyEndY = bodyStartY + bodyHeight + 12
+  const sigBoxY = Math.max(bodyEndY + 28, Math.min(462, maxContentBottomY - 4))
+
   doc.fillColor('#334155')
-    .fontSize(13)
+    .fontSize(bodyFontSize)
     .font('Helvetica')
-    .text(interpolate(template.body, recipient, template), 90, currentY, {
+    .text(bodyText, 90, bodyStartY, {
       align: 'center',
-      width: 662,
-      lineGap: 6
+      width: bodyWidth,
+      lineGap: bodyLineGap
     })
 
   const isSig2Active = Boolean(template.enableSig2)
-  const sigBoxY = 444
 
-  // Footer: Dual signature vs Single signature
   if (isSig2Active) {
-    // Center: Official Seal and Unique Certificate Number
-    drawOfficialSeal(doc, 421, 478, accentColor, 'md')
+    const sealCY = sigBoxY + 38
+    drawOfficialSeal(doc, 421, sealCY, accentColor, 'md')
 
     doc.save()
     doc.fillColor('#64748b')
       .fontSize(8.5)
       .font('Helvetica-Bold')
-      .text('NO. SERTIFIKAT', 280, 514, { width: 282, align: 'center', characterSpacing: 1.5 })
+      .text('NO. SERTIFIKAT', 280, sealCY + 36, { width: 282, align: 'center', characterSpacing: 1.5 })
     doc.fillColor('#1e293b')
       .fontSize(10)
       .font('Helvetica')
-      .text(certNumber, 280, 528, { width: 282, align: 'center', characterSpacing: 1.2 })
+      .text(certNumber, 280, sealCY + 50, { width: 282, align: 'center', characterSpacing: 1.2 })
     doc.restore()
 
-    // Left: Tanda Tangan 2 (TTD 2 kiri bawah)
     const sig2Label = template.signatoryTitle2 || 'Mengetahui'
     const sig2Name = template.signatory2 || template.organization
 
@@ -392,33 +394,32 @@ function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayloa
         const sig2Base64 = template.signatureImage2.substring(template.signatureImage2.indexOf('base64,') + 7)
         if (sig2Base64) {
           const sig2Buffer = Buffer.from(sig2Base64, 'base64')
-          doc.image(sig2Buffer, 90, sigBoxY, { fit: [140, 52], align: 'center', valign: 'center' })
+          doc.image(sig2Buffer, 60, sigBoxY, { fit: [220, 86], align: 'center', valign: 'center' })
         }
       } catch (err) {
         console.error('Failed to render signature 2 in PDF:', err)
       }
     }
 
-    doc.fillColor('#172327').font('Times-Bold').fontSize(16).text(sig2Name, 55, sigBoxY + 56, { width: 210, align: 'center' })
-    doc.moveTo(75, sigBoxY + 77).lineTo(245, sigBoxY + 77).lineWidth(1).strokeColor('#cbd5e1').stroke()
-    doc.fillColor('#64748b').font('Helvetica-Bold').fontSize(9.5).text(sig2Label, 55, sigBoxY + 82, { width: 210, align: 'center' })
+    doc.fillColor('#172327').font('Times-Bold').fontSize(16).text(sig2Name, 55, sigBoxY + 88, { width: 210, align: 'center' })
+    doc.moveTo(75, sigBoxY + 110).lineTo(245, sigBoxY + 110).lineWidth(1).strokeColor('#cbd5e1').stroke()
+    doc.fillColor('#64748b').font('Helvetica-Bold').fontSize(9.5).text(sig2Label, 55, sigBoxY + 115, { width: 210, align: 'center' })
   } else {
-    // Single signature mode: Seal & cert ID on the left side
-    drawOfficialSeal(doc, 145, 482, accentColor, 'lg')
+    const sealCY = sigBoxY + 38
+    drawOfficialSeal(doc, 155, sealCY, accentColor, 'lg')
 
     doc.save()
     doc.fillColor('#64748b')
       .fontSize(8.5)
       .font('Helvetica-Bold')
-      .text('NO. SERTIFIKAT', 250, 514, { width: 342, align: 'center', characterSpacing: 1.5 })
+      .text('NO. SERTIFIKAT', 250, sealCY + 32, { width: 342, align: 'center', characterSpacing: 1.5 })
     doc.fillColor('#1e293b')
       .fontSize(10)
       .font('Helvetica')
-      .text(certNumber, 250, 528, { width: 342, align: 'center', characterSpacing: 1.2 })
+      .text(certNumber, 250, sealCY + 46, { width: 342, align: 'center', characterSpacing: 1.2 })
     doc.restore()
   }
 
-  // Right: Tanda Tangan 1 (TTD 1 kanan bawah)
   const sig1Label = template.signatoryTitle1 || 'Ditetapkan secara resmi oleh'
   const sig1Name = template.signatory || 'Penandatangan'
 
@@ -427,16 +428,16 @@ function renderCertificatePage(doc: PDFKit.PDFDocument, template: TemplatePayloa
       const sigBase64 = template.signatureImage.substring(template.signatureImage.indexOf('base64,') + 7)
       if (sigBase64) {
         const sigBuffer = Buffer.from(sigBase64, 'base64')
-        doc.image(sigBuffer, 612, sigBoxY, { fit: [140, 52], align: 'center', valign: 'center' })
+        doc.image(sigBuffer, 580, sigBoxY, { fit: [220, 86], align: 'center', valign: 'center' })
       }
     } catch (err) {
       console.error('Failed to render signature 1 in PDF:', err)
     }
   }
 
-  doc.fillColor('#172327').font('Times-Bold').fontSize(16).text(sig1Name, 577, sigBoxY + 56, { width: 210, align: 'center' })
-  doc.moveTo(597, sigBoxY + 77).lineTo(767, sigBoxY + 77).lineWidth(1).strokeColor('#cbd5e1').stroke()
-  doc.fillColor('#64748b').font('Helvetica-Bold').fontSize(9.5).text(sig1Label, 577, sigBoxY + 82, { width: 210, align: 'center' })
+  doc.fillColor('#172327').font('Times-Bold').fontSize(16).text(sig1Name, 577, sigBoxY + 88, { width: 210, align: 'center' })
+  doc.moveTo(597, sigBoxY + 110).lineTo(767, sigBoxY + 110).lineWidth(1).strokeColor('#cbd5e1').stroke()
+  doc.fillColor('#64748b').font('Helvetica-Bold').fontSize(9.5).text(sig1Label, 577, sigBoxY + 115, { width: 210, align: 'center' })
 }
 
 function generateSinglePDFBuffer(template: TemplatePayload, recipient: Record<string, unknown>): Promise<Buffer> {
@@ -501,7 +502,11 @@ app.post('/api/certificates/zip', async (req, res) => {
   }
 
   try {
-    const archive = new ZipArchive({ zlib: { level: 6 } })
+    const filename = `sertifikat-lengkap-${(template.name || 'sertifikat').toLowerCase().replace(/[^a-z0-9]+/gi, '-')}.zip`
+    res.setHeader('Content-Type', 'application/zip')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+
+    const archive = new ZipArchive({ zlib: { level: 6 }, forceZip64: true })
     archive.pipe(res)
 
     archive.on('error', (err: Error) => {
@@ -510,6 +515,8 @@ app.post('/api/certificates/zip', async (req, res) => {
     })
 
     const usedFilenames = new Map<string, number>()
+    const pdfBuffers: { buffer: Buffer; name: string }[] = []
+
     for (let i = 0; i < recipients.length; i++) {
       const r = recipients[i]!
       const recipientName = value(r, template.primaryField) || `Penerima-${i + 1}`
@@ -521,7 +528,11 @@ app.post('/api/certificates/zip', async (req, res) => {
         : `sertifikat-${safeName}.pdf`
 
       const pdfBuffer = await generateSinglePDFBuffer(template, r)
-      archive.append(pdfBuffer, { name: entryName })
+      pdfBuffers.push({ buffer: pdfBuffer, name: entryName })
+    }
+
+    for (const entry of pdfBuffers) {
+      archive.append(entry.buffer, { name: entry.name, date: new Date() })
     }
 
     await archive.finalize()
